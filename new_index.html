@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mundo – Pack 01</title>
+    <!-- TailwindCSS for quick styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React and ReactDOM UMD builds -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for in‑browser JSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Chart.js for the Signal Radar -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+      html, body { background: #0b1020; }
+    </style>
+  </head>
+  <body class="bg-slate-950 text-slate-100">
+    <div id="root"></div>
+    <script type="text/babel">
+      // Utility functions for RNG and clamping
+      function Alea(seedStr = "mundo") {
+        let s0 = mash(" "), s1 = mash(" "), s2 = mash(" ");
+        s0 -= mash(seedStr); if (s0 < 0) s0 += 1;
+        s1 -= mash(seedStr); if (s1 < 0) s1 += 1;
+        s2 -= mash(seedStr); if (s2 < 0) s2 += 1;
+        function mash(data) {
+          data = data.toString();
+          let n = 0xefc8249d;
+          for (let i = 0; i < data.length; i++) {
+            n += data.charCodeAt(i);
+            let h = 0.02519603282416938 * n;
+            n = h >>> 0; h -= n; h *= n; n = h >>> 0; h -= n; n += h * 0x100000000;
+          }
+          return (n >>> 0) * 2.3283064365386963e-10;
+        }
+        return function() {
+          const t = 2091639 * s0 + 2.3283064365386963e-10 * 0x100000000;
+          s0 = s1; s1 = s2; s2 = t - (t | 0);
+          return s2;
+        };
+      }
+      function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+      function randomOne(arr, rnd) { return arr[(rnd() * arr.length) | 0]; }
+      // Colors and names for simulated citizens
+      const COLORS = ["Amber","Azure","Crimson","Emerald","Indigo","Ivory","Jade","Saffron","Slate","Violet"];
+      const NOUNS  = ["Badger","Heron","Lynx","Marten","Moth","Otter","Osprey","Sparrow","Wren","Wolf"];
+      // Generate 100 unique citizen names
+      function makeCitizens(rnd) {
+        const names = [];
+        for (let i = 0; i < COLORS.length; i++) {
+          for (let j = 0; j < NOUNS.length; j++) {
+            names.push(`${COLORS[i]} ${NOUNS[j]}`);
+          }
+        }
+        // shuffle
+        for (let i = names.length - 1; i > 0; i--) {
+          const j = Math.floor(rnd() * (i + 1));
+          [names[i], names[j]] = [names[j], names[i]];
+        }
+        return names;
+      }
+      // Poisson sampler to derive how many actions occur per second
+      function poisson(lambda) {
+        let L = Math.exp(-lambda), k = 0, p = 1;
+        do {
+          k++;
+          p *= Math.random();
+        } while (p > L);
+        return k - 1;
+      }
+      // Predefined vibe lines
+      const WHOLESOME_LINES = [
+        "The fields look patient today.",
+        "I've never seen a volcano before, but I'd sure love to.",
+        "Rain soon? My wheat hopes so.",
+        "Passing travelers say the river sings."
+      ];
+      const SNARKY_LINES = [
+        "Quicksand discourse again? Bold.",
+        "If I say ‘sun’ enough will it listen?",
+        "Volcano when? Asking for a friend.",
+        "Gold?? In this economy?"
+      ];
+      const SLAPSTICK_LINES = [
+        "Slipped in mud, 10/10 would slip again.",
+        "I saw a fish. It saw me. We nodded.",
+        "I brought a bucket. For reasons.",
+        "If I shout ‘flood’ do I get a boat?"
+      ];
+      // Helper to get random vibe line
+      function randomVibeLine() {
+        const all = [...WHOLESOME_LINES, ...SNARKY_LINES, ...SLAPSTICK_LINES];
+        return all[Math.floor(Math.random() * all.length)];
+      }
+      // Keywords to track in radar
+      const TRACKED_KEYWORDS = [
+        "wheat","rain","sun","flood","sand","quicksand","found","donate",
+        "village","trees","wood","food","volcano","fire","gold","mountain",
+        "witch","festival"
+      ];
+      // Tile types (0..15 allowed)
+      const TILE = {
+        GRASS:    0,
+        WATER:    1,
+        WHEAT:    2,
+        SAND:     3,
+        WITCH:    4,
+        TREES:    5,
+        GOLD:     6,
+        MOUNTAIN: 7,
+        VILLAGE:  8
+      };
+      // Tile definitions: name, hex color, lore flag, lore text template
+      const tileDefs = [];
+      function defTile(id, name, hex, loreOnSpawn, loreText) {
+        tileDefs[id] = { id, name, hex, loreOnSpawn, lore: loreText };
+      }
+      defTile(TILE.GRASS,    "grass",    "#2F9E44", 0, "");
+      defTile(TILE.WATER,    "water",    "#1D4ED8", 0, "");
+      defTile(TILE.WHEAT,    "wheat",    "#D9B63A", 0, "");
+      defTile(TILE.SAND,     "sand",     "#D4A373", 0, "");
+      defTile(TILE.WITCH,    "witch",    "#D946EF", 0, "A circle hums with old power.");
+      defTile(TILE.TREES,    "trees",    "#2A6F3E", 0, "");
+      defTile(TILE.GOLD,     "gold",     "#FFD700", 1, "A shimmer of gold appears...");
+      defTile(TILE.MOUNTAIN, "mountain", "#6B7280", 0, "");
+      defTile(TILE.VILLAGE,  "village",  "#EAB308", 1, "A village is founded: %NAME%.");
+      // Word to tile name mapping for admin verbs
+      const nameToTile = {};
+      tileDefs.forEach(d => { if (d) nameToTile[d.name] = d.id; });
+      // World dimensions (big map)
+      const WORLD_W = 1000;
+      const WORLD_H = 1000;
+      const VIEW_W  = 80;
+      const VIEW_H  = 60;
+      const SCALE   = 10; // pixels per tile at zoom=1
+      // Top-level App component
+      function App() {
+        const { useState, useEffect, useRef, useMemo } = React;
+        // Seed & RNG
+        const [seed, setSeed] = useState(() => Math.random().toString(36).slice(2));
+        const rnd = useMemo(() => Alea(seed), [seed]);
+        // World state
+        const [world, setWorld] = useState(() => makeInitialWorld(rnd));
+        // Chat states
+        const [messages, setMessages] = useState([]);
+        const [input, setInput] = useState("");
+        const [lore, setLore] = useState(() => [ { id: 1, ts: Date.now(), text: "Mundo awakens. A hush over sunlit grass." } ]);
+        const [showAdmin, setShowAdmin] = useState(false);
+        const [adminMessages, setAdminMessages] = useState([]);
+        const [adminInput, setAdminInput] = useState("");
+        const [customVerbs, setCustomVerbs] = useState([]);
+        // Director weights including GAM (actions/min)
+        const [weights, setWeights] = useState({
+          rainBias: 0, floodIntensity: 0.4, spawnBoost: 0, chaos: 0.0, quicksandSensitivity: 0.35,
+          gam: 10, // actions/minute for simulated citizens
+          loreMix: 0.5 // mix between vibe (0) and echo (1)
+        });
+        // Simulated citizens (names & resources)
+        const simCitizensRef = useRef(makeCitizens(rnd));
+        const userResourcesRef = useRef({}); // userId -> {food, wood}
+        // WebSocket URL (not used yet)
+        const [wsUrl, setWsUrl] = useState("");
+        const wsRef = useRef(null);
+        // Plurality & sequences
+        const countsRef = useRef(new Map());
+        const sequenceRef = useRef({ stage: 0, lastTs: 0 });
+        // Topic tracker (for volcano etc.) - simplified
+        const topicScoresRef = useRef(new Map());
+        // Canvas & view
+        const canvasRef = useRef(null);
+        const rafRef = useRef(null);
+        const [view, setView] = useState({ x: 0, y: 0, w: VIEW_W, h: VIEW_H, zoom: 1, scale: SCALE });
+        // Hover info
+        const hoverRef = useRef({ x: -1, y: -1, name: "" });
+        // Radar chart reference
+        const radarRef = useRef(null);
+        // Binned counts for radar (60 bins of 5 sec each = 5 min window)
+        const radarBinsRef = useRef(() => {
+          const bins = [];
+          for (let i = 0; i < 60; i++) {
+            bins.push({});
+          }
+          return bins;
+        })();
+        const radarIndexRef = useRef(0);
+        // Auto-scroll refs for chat & admin chat
+        const chatScrollRef = useRef(null);
+        const adminScrollRef = useRef(null);
+        const loreScrollRef = useRef(null);
+        // Effect: reseed rebuild world
+        useEffect(() => {
+          setWorld(makeInitialWorld(rnd));
+          countsRef.current = new Map();
+          topicScoresRef.current = new Map();
+          simCitizensRef.current = makeCitizens(rnd);
+          pushLore(`The weave reshapes. New seed ${seed.slice(0, 6)}.`);
+        }, [rnd]);
+        // Tick loop (slow pacing - sample updates)
+        useEffect(() => {
+          const TICK = 200; // ms per tick
+          const SAMPLE_PER_TICK = 8000;
+          let last = performance.now();
+          let acc = 0;
+          function loop(now) {
+            acc += now - last; last = now;
+            while (acc >= TICK) {
+              setWorld(w => tickWorldSampled(w, rnd, weights, SAMPLE_PER_TICK));
+              acc -= TICK;
+            }
+            draw(canvasRef.current, world, view);
+            rafRef.current = requestAnimationFrame(loop);
+          }
+          rafRef.current = requestAnimationFrame(loop);
+          return () => cancelAnimationFrame(rafRef.current);
+        }, [rnd, world, view, weights]);
+        // Plurality cleanup
+        useEffect(() => {
+          const iv = setInterval(() => {
+            const now = Date.now();
+            for (const [word, arr] of countsRef.current.entries()) {
+              while (arr.length && now - arr[0] > 60000) arr.shift();
+              if (!arr.length) countsRef.current.delete(word);
+            }
+          }, 2000);
+          return () => clearInterval(iv);
+        }, []);
+        // Simulated citizens heartbeat based on GAM
+        useEffect(() => {
+          const iv = setInterval(() => {
+            const perMin = clamp(weights.gam, 0, 120);
+            const lambdaPerSec = perMin / 60;
+            const acts = poisson(lambdaPerSec);
+            for (let i = 0; i < acts; i++) {
+              const name = randomOne(simCitizensRef.current, rnd);
+              simCitizenAct(name);
+            }
+          }, 1000);
+          return () => clearInterval(iv);
+        }, [weights.gam]);
+        // Radar update interval
+        useEffect(() => {
+          const iv = setInterval(() => {
+            // Move to next bin every 5 seconds
+            radarIndexRef.current = (radarIndexRef.current + 1) % radarBinsRef.current.length;
+            radarBinsRef.current[radarIndexRef.current] = {}; // clear current bin
+            updateRadarChart();
+          }, 5000);
+          return () => clearInterval(iv);
+        }, []);
+        // Chart instance stored in ref (declared before use)
+        const radarChartRef = useRef(null);
+        // Radar chart initialization
+        useEffect(() => {
+          if (!radarRef.current) return;
+          const ctx = radarRef.current.getContext('2d');
+          radarChartRef.current = new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels: Array.from({ length: radarBinsRef.current.length }, (_, i) => ''),
+              datasets: []
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              scales: {
+                x: { display: false },
+                y: { display: true, beginAtZero: true }
+              },
+              plugins: {
+                legend: { display: true },
+                tooltip: { mode: 'index', intersect: false }
+              }
+            }
+          });
+          updateRadarChart();
+        }, []);
+        function updateRadarChart() {
+          const countsPerKeyword = {};
+          // Summarize counts across bins
+          TRACKED_KEYWORDS.forEach(k => countsPerKeyword[k] = 0);
+          let chatterCount = 0;
+          radarBinsRef.current.forEach(bin => {
+            let totalInBin = 0;
+            Object.keys(bin).forEach(k => { countsPerKeyword[k] += bin[k]; totalInBin += bin[k]; });
+            // We'll treat messages that didn't hit tracked keywords separately
+            chatterCount += Math.max(0, bin._chatter || 0);
+          });
+          // Determine top 5 keywords
+          const sorted = Object.entries(countsPerKeyword).sort((a,b) => b[1] - a[1]).slice(0, 5);
+          const labels = radarBinsRef.current.map((_, i) => i.toString());
+          const datasets = [];
+          sorted.forEach(([k, _], idx) => {
+            const data = radarBinsRef.current.map(bin => bin[k] || 0);
+            const color = `hsl(${(idx * 60) % 360}, 70%, 60%)`;
+            datasets.push({ label: k, data, borderColor: color, backgroundColor: 'transparent', tension: 0.3 });
+          });
+          // Add chatter line
+          const chatterData = radarBinsRef.current.map(bin => bin._chatter || 0);
+          datasets.push({ label: 'chatter', data: chatterData, borderColor: '#555', backgroundColor: 'transparent', borderDash: [4,4], tension: 0.3 });
+          if (radarChartRef.current) {
+            radarChartRef.current.data.labels = labels;
+            radarChartRef.current.data.datasets = datasets;
+            radarChartRef.current.update();
+          }
+        }
+        // Function to push chat into bins for radar
+        function tallyForRadar(txt) {
+          const lower = txt.toLowerCase();
+          const bin = radarBinsRef.current[radarIndexRef.current];
+          let matched = false;
+          for (const key of TRACKED_KEYWORDS) {
+            if (lower.includes(key)) {
+              bin[key] = (bin[key] || 0) + 1;
+              matched = true;
+            }
+          }
+          if (!matched) {
+            bin._chatter = (bin._chatter || 0) + 1;
+          }
+        }
+        // Petition counts for villages
+        const [petitionCounts, setPetitionCounts] = useState({});
+        // Chat ingestion
+        function ingestChat(user, txt, echo = true) {
+          const msg = { id: Math.random(), user, text: txt, ts: Date.now() };
+          setMessages(M => [...M, msg]);
+          if (echo) {
+            // For radar
+            tallyForRadar(txt);
+            // For player interactions
+            applyRules(txt, user);
+          }
+          // Auto scroll
+          setTimeout(() => {
+            if (chatScrollRef.current) {
+              chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+            }
+          }, 0);
+        }
+        function pushLore(text) {
+          setLore(L => {
+            const updated = [{ id: Math.random(), ts: Date.now(), text }, ...L];
+            return updated.slice(0, 200);
+          });
+          setTimeout(() => {
+            if (loreScrollRef.current) {
+              loreScrollRef.current.scrollTop = 0;
+            }
+          }, 0);
+        }
+        function ingestAdmin(txt) {
+          const msg = { id: Math.random(), user: "ADMIN", text: txt, ts: Date.now() };
+          setAdminMessages(M => [...M, msg]);
+          setTimeout(() => {
+            if (adminScrollRef.current) {
+              adminScrollRef.current.scrollTop = adminScrollRef.current.scrollHeight;
+            }
+          }, 0);
+        }
+        // handle send from user input
+        function handleSend() {
+          const txt = input.trim(); if (!txt) return;
+          if (txt === "/admin") { setShowAdmin(s => !s); setInput(""); return; }
+          ingestChat(randomOne(simCitizensRef.current, rnd), txt, true);
+          setInput("");
+        }
+        // handle admin send
+        function handleAdminSend() {
+          const txt = adminInput.trim(); if (!txt) return;
+          ingestAdmin(txt);
+          runAdminCommand(txt);
+          setAdminInput("");
+        }
+        // Admin command DSL (simplified)
+        function runAdminCommand(cmd) {
+          const parts = cmd.trim().split(/\s+/);
+          const head = parts.shift().toLowerCase();
+          if (head === 'set' && parts[0] === 'weight') {
+            const key = parts[1]; const val = parseFloat(parts[2]);
+            if (key in weights && !isNaN(val)) {
+              setWeights(w => ({ ...w, [key]: val }));
+              pushLore(`Director set weight ${key} → ${val}`);
+            }
+            return;
+          }
+          if (head === 'add' && parts[0] === 'spawn') {
+            const word = parts[1]; const tileName = parts[2] || 'wheat';
+            const tileId = nameToTile[tileName] ?? TILE.WHEAT;
+            setCustomVerbs(v => [...v.filter(x => x.word !== word), { word, kind: 'spawn', payload: { tile: tileId } }]);
+            pushLore(`Director added spawn verb '${word}' → ${tileName}`);
+            return;
+          }
+          if (head === 'add' && parts[0] === 'chance') {
+            const word = parts[1]; const meter = parts[2] || 'rain';
+            const amount = parseFloat(parts[3] || '0.05');
+            setCustomVerbs(v => [...v.filter(x => x.word !== word), { word, kind: 'chance', payload: { meter, amount } }]);
+            pushLore(`Director added chance verb '${word}' → ${meter}+${amount}`);
+            return;
+          }
+          if (head === 'remove') {
+            const word = parts[0]; setCustomVerbs(v => v.filter(x => x.word !== word));
+            pushLore(`Director removed verb '${word}'`);
+            return;
+          }
+          if (head === 'lore') {
+            const text = cmd.slice(cmd.indexOf(' ') + 1);
+            pushLore(text);
+            return;
+          }
+          if (head === 'reseed') {
+            setSeed(Math.random().toString(36).slice(2));
+            return;
+          }
+          // fallback: treat as user chat from ADMIN
+          ingestChat('ADMIN', cmd, true);
+        }
+        // Apply chat words to world rules
+        function applyRules(txt, user) {
+          const lower = txt.toLowerCase();
+          // Track plurality counts
+          const arr = countsRef.current.get(lower) || [];
+          arr.push(Date.now()); countsRef.current.set(lower, arr);
+          // Base actions
+          if (lower === 'wheat') {
+            spawnTile(world, TILE.WHEAT, rnd);
+          }
+          if (lower === 'rain') {
+            world.meta.rainMeter = clamp((world.meta.rainMeter || 0) + 0.05 + weights.rainBias * 0.05, 0, 1);
+            if (world.meta.rainMeter > 0.7) {
+              doRain(world, rnd, weights);
+              world.meta.rainMeter = 0;
+              pushLore('Clouds gather. Mundo drinks.');
+            }
+          }
+          if (lower === 'sun') {
+            world.meta.rainMeter = clamp((world.meta.rainMeter || 0) - 0.05, 0, 1);
+          }
+          if (lower === 'flood') {
+            doFlood(world, rnd, weights);
+            pushLore('Rivers swell their banks.');
+          }
+          // Village petitions ("found <name>") simplified
+          const foundMatch = lower.match(/^found\s+([a-z][a-z0-9\- ]{1,20})$/);
+          if (foundMatch) {
+            const vName = foundMatch[1].trim();
+            setPetitionCounts(prev => {
+              const next = { ...prev };
+              next[vName] = (next[vName] || 0) + 1;
+              if (next[vName] >= 10) {
+                // Place village tile
+                if (placeVillage(world, vName, rnd)) {
+                  pushLore(`A village is founded: ${vName}.`);
+                }
+                delete next[vName];
+              } else {
+                pushLore(`Petitions for village '${vName}': ${next[vName]}/10`);
+              }
+              return next;
+            });
+          }
+          // Plurality-driven sand drift
+          applyPlurality(world, countsRef.current, weights, rnd);
+          setWorld({ ...world });
+        }
+        // Simulated citizen action
+        function simCitizenAct(name) {
+          const r = Math.random();
+          if (r < 0.40) { ingestChat(name, randomVibeLine(), true); return; }
+          else if (r < 0.65) { ingestChat(name, 'wheat', true); return; }
+          else if (r < 0.80) { ingestChat(name, 'rain', true); return; }
+          else if (r < 0.86) { ingestChat(name, 'sun', true); return; }
+          else if (r < 0.92) { ingestChat(name, 'flood', true); return; }
+          else if (r < 0.97) { ingestChat(name, 'sand', true); return; }
+          else { ingestChat(name, 'quicksand', true); return; }
+        }
+        // UI: move camera
+        function nudge(dx, dy) {
+          setView(v => ({ ...v, x: clamp(v.x + dx, 0, WORLD_W - v.w), y: clamp(v.y + dy, 0, WORLD_H - v.h) }));
+        }
+        function zoom(delta) {
+          setView(v => {
+            const z = clamp(v.zoom + delta, 0.5, 3);
+            const scale = Math.round(SCALE * z);
+            return { ...v, zoom: z, scale };
+          });
+        }
+        // Canvas hover tracking for coords & village names
+        useEffect(() => {
+          const el = canvasRef.current; if (!el) return;
+          function onMove(e) {
+            const rect = el.getBoundingClientRect();
+            const tx = Math.floor((e.clientX - rect.left) / view.scale);
+            const ty = Math.floor((e.clientY - rect.top) / view.scale);
+            const gx = clamp(view.x + tx, 0, WORLD_W - 1);
+            const gy = clamp(view.y + ty, 0, WORLD_H - 1);
+            const idx = gy * WORLD_W + gx;
+            const name = world.villages[idx] || "";
+            hoverRef.current = { x: gx, y: gy, name };
+          }
+          function onLeave() { hoverRef.current = { x: -1, y: -1, name: "" }; }
+          el.addEventListener('mousemove', onMove);
+          el.addEventListener('mouseleave', onLeave);
+          return () => { el.removeEventListener('mousemove', onMove); el.removeEventListener('mouseleave', onLeave); };
+        }, [view, world]);
+        // Tooltip effect
+        const [tooltip, setTooltip] = useState("");
+        useEffect(() => {
+          const iv = setInterval(() => {
+            const h = hoverRef.current;
+            if (h.x >= 0) {
+              const x1 = h.x + 1;
+              const yBL = WORLD_H - h.y;
+              const vname = h.name ? ` • Village: ${h.name}` : "";
+              setTooltip(`(${x1},${yBL})${vname}`);
+            } else setTooltip("");
+          }, 100);
+          return () => clearInterval(iv);
+        }, []);
+        // Build UI
+        return (
+          <div className="mx-auto max-w-7xl px-4 py-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Map and radar column (2/3 width) */}
+            <div className="md:col-span-2 flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <div className="text-lg font-semibold">Mundo</div>
+                <div className="flex items-center gap-3 text-xs text-slate-400">
+                  <div>Seed: <code className="text-emerald-300">{seed.slice(0,6)}</code></div>
+                  <div className="hidden sm:flex items-center gap-1">
+                    <button onClick={() => zoom(-0.1)} className="rounded bg-slate-800 px-2 py-0.5">−</button>
+                    <button onClick={() => zoom(+0.1)} className="rounded bg-slate-800 px-2 py-0.5">+</button>
+                    <button onClick={() => nudge(-20,0)} className="rounded bg-slate-800 px-2 py-0.5">◀</button>
+                    <button onClick={() => nudge(20,0)} className="rounded bg-slate-800 px-2 py-0.5">▶</button>
+                    <button onClick={() => nudge(0,-20)} className="rounded bg-slate-800 px-2 py-0.5">▲</button>
+                    <button onClick={() => nudge(0,20)} className="rounded bg-slate-800 px-2 py-0.5">▼</button>
+                  </div>
+                </div>
+              </div>
+              <div className="relative rounded-2xl border border-slate-800 overflow-hidden" style={{height: `${view.h * view.scale}px`}}>
+                <canvas ref={canvasRef} width={view.w * view.scale} height={view.h * view.scale} className="block w-full bg-slate-900" />
+                {tooltip && (
+                  <div className="pointer-events-none absolute bottom-2 right-2 bg-black/60 text-xs text-white px-2 py-1 rounded">
+                    {tooltip}
+                  </div>
+                )}
+              </div>
+              {/* Big Radar below map */}
+              <div className="rounded-2xl border border-slate-800 bg-slate-900" style={{height: `${view.h * view.scale}px`}}>
+                <div className="p-2 text-sm font-semibold border-b border-slate-800">Signal Radar (last 5 min)</div>
+                <div className="p-2" style={{height: `calc(100% - 2rem)`}}>
+                  <canvas ref={radarRef}></canvas>
+                </div>
+              </div>
+              <div className="grid grid-cols-4 gap-2 text-xs text-slate-400 mt-2">
+                {[TILE.GRASS, TILE.WATER, TILE.WHEAT, TILE.SAND, TILE.TREES, TILE.GOLD, TILE.MOUNTAIN, TILE.VILLAGE, TILE.WITCH].map(id => (
+                  <div key={id} className="flex items-center gap-2">
+                    <div className="h-3 w-3 rounded" style={{backgroundColor: tileDefs[id].hex}}></div>
+                    <div>{tileDefs[id].name}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* Control & logs column */}
+            <div className="flex flex-col gap-4">
+              {/* Chat */}
+              <div className="rounded-2xl border border-slate-800 flex flex-col" style={{height: '16rem'}}>
+                <div className="p-2 text-lg font-semibold border-b border-slate-800 flex justify-between">
+                  <div>Chat</div>
+                  <div className="text-xs text-slate-400">Try: wheat, rain, sun, flood, sand, quicksand</div>
+                </div>
+                <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-2 text-sm">
+                  {messages.map(m => (
+                    <div key={m.id} className="mb-1"><span className="text-emerald-300">{m.user}</span> <span className="mx-1 text-slate-600">•</span> {m.text}</div>
+                  ))}
+                </div>
+                <div className="p-2 border-t border-slate-800 flex gap-2">
+                  <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} placeholder="Type a word… (/admin to toggle)" className="flex-1 rounded-lg bg-slate-900 px-3 py-2 text-sm ring-1 ring-slate-700 focus:ring-emerald-500" />
+                  <button onClick={handleSend} className="bg-emerald-500 text-emerald-950 px-3 py-2 rounded-lg text-sm font-semibold hover:bg-emerald-400">Send</button>
+                </div>
+              </div>
+              {/* Lore feed */}
+              <div className="rounded-2xl border border-slate-800 flex flex-col" style={{height: '16rem'}}>
+                <div className="p-2 text-sm font-semibold border-b border-slate-800 flex justify-between">
+                  <div>Lore feed</div>
+                  <button onClick={() => setSeed(Math.random().toString(36).slice(2))} className="text-xs text-slate-400 underline">reseed world</button>
+                </div>
+                <div ref={loreScrollRef} className="flex-1 overflow-y-auto p-2 text-sm">
+                  {lore.map(l => (
+                    <div key={l.id} className="mb-2"><div className="text-slate-300">{l.text}</div><div className="text-[10px] text-slate-500">{new Date(l.ts).toLocaleTimeString()}</div></div>
+                  ))}
+                </div>
+              </div>
+              {/* Director Console + Admin Chat */}
+              {showAdmin && (
+                <div className="rounded-2xl border border-slate-800 flex flex-col">
+                  <div className="p-2 text-sm font-semibold border-b border-slate-800">Director Console</div>
+                  <div className="p-2 space-y-3 text-sm">
+                    <div>
+                      <label className="flex justify-between mb-1">Rain bias<span>{weights.rainBias.toFixed(2)}</span></label>
+                      <input type="range" min="-1" max="1" step="0.01" value={weights.rainBias} onChange={e => setWeights(w => ({...w, rainBias: parseFloat(e.target.value)}))} className="w-full accent-emerald-400" />
+                    </div>
+                    <div>
+                      <label className="flex justify-between mb-1">Flood intensity<span>{weights.floodIntensity.toFixed(2)}</span></label>
+                      <input type="range" min="0" max="1" step="0.01" value={weights.floodIntensity} onChange={e => setWeights(w => ({...w, floodIntensity: parseFloat(e.target.value)}))} className="w-full accent-emerald-400" />
+                    </div>
+                    <div>
+                      <label className="flex justify-between mb-1">Spawn boost<span>{weights.spawnBoost.toFixed(2)}</span></label>
+                      <input type="range" min="-1" max="1" step="0.01" value={weights.spawnBoost} onChange={e => setWeights(w => ({...w, spawnBoost: parseFloat(e.target.value)}))} className="w-full accent-emerald-400" />
+                    </div>
+                    <div>
+                      <label className="flex justify-between mb-1">Chaos<span>{weights.chaos.toFixed(2)}</span></label>
+                      <input type="range" min="0" max="1" step="0.01" value={weights.chaos} onChange={e => setWeights(w => ({...w, chaos: parseFloat(e.target.value)}))} className="w-full accent-emerald-400" />
+                    </div>
+                    <div>
+                      <label className="flex justify-between mb-1">Quicksand sensitivity<span>{weights.quicksandSensitivity.toFixed(2)}</span></label>
+                      <input type="range" min="0.1" max="0.8" step="0.01" value={weights.quicksandSensitivity} onChange={e => setWeights(w => ({...w, quicksandSensitivity: parseFloat(e.target.value)}))} className="w-full accent-emerald-400" />
+                    </div>
+                    <div>
+                      <label className="flex justify-between mb-1">GAM: Actions/min<span>{weights.gam.toFixed(0)}</span></label>
+                      <input type="range" min="0" max="120" step="1" value={weights.gam} onChange={e => setWeights(w => ({...w, gam: parseInt(e.target.value)}))} className="w-full accent-emerald-400" />
+                    </div>
+                    <div>
+                      <label className="flex justify-between mb-1">Lore Mix (Echo ↔ Vibe)<span>{weights.loreMix.toFixed(2)}</span></label>
+                      <input type="range" min="0" max="1" step="0.01" value={weights.loreMix} onChange={e => setWeights(w => ({...w, loreMix: parseFloat(e.target.value)}))} className="w-full accent-emerald-400" />
+                    </div>
+                  </div>
+                  <div className="border-t border-slate-800 p-2 text-sm font-semibold">Admin Chat</div>
+                  <div ref={adminScrollRef} className="h-32 overflow-y-auto p-2 text-sm">
+                    {adminMessages.map(m => <div key={m.id} className="mb-1"><span className="text-fuchsia-400">{m.user}</span> <span className="mx-1 text-slate-500">•</span> {m.text}</div>)}
+                  </div>
+                  <div className="p-2 border-t border-slate-800 flex gap-2">
+                    <input value={adminInput} onChange={e => setAdminInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAdminSend()} placeholder="Type admin command…" className="flex-1 rounded-lg bg-slate-900 px-3 py-2 text-sm ring-1 ring-slate-700 focus:ring-fuchsia-400" />
+                    <button onClick={handleAdminSend} className="bg-fuchsia-500 text-fuchsia-950 px-3 py-2 rounded-lg text-sm font-semibold hover:bg-fuchsia-400">Run</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+      // Rendering
+      ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+      // World generation and tick functions
+      function makeInitialWorld(rnd) {
+        const grid = new Uint8Array(WORLD_W * WORLD_H);
+        const height = new Float32Array(WORLD_W * WORLD_H);
+        const moisture = new Float32Array(WORLD_W * WORLD_H);
+        const idx = (x, y) => y * WORLD_W + x;
+        // Fill base
+        grid.fill(TILE.GRASS);
+        // Simple blob generation for terrain
+        function blobs(kind, count, steps, spread) {
+          for (let b = 0; b < count; b++) {
+            let x = (rnd() * WORLD_W) | 0, y = (rnd() * WORLD_H) | 0;
+            for (let s = 0; s < steps; s++) {
+              const r = (rnd() * spread) | 0;
+              for (let i = 0; i < r; i++) {
+                const xx = clamp(x + ((rnd() < 0.5 ? -1 : 1) * ((rnd() * 2) | 0)), 0, WORLD_W - 1);
+                const yy = clamp(y + ((rnd() < 0.5 ? -1 : 1) * ((rnd() * 2) | 0)), 0, WORLD_H - 1);
+                grid[idx(xx, yy)] = kind;
+              }
+              x = clamp(x + (rnd() < 0.5 ? -1 : 1), 0, WORLD_W - 1);
+              y = clamp(y + (rnd() < 0.5 ? -1 : 1), 0, WORLD_H - 1);
+            }
+          }
+        }
+        blobs(TILE.WATER, 25, 900, 18);
+        blobs(TILE.SAND, 18, 700, 14);
+        blobs(TILE.MOUNTAIN, 30, 1200, 20);
+        blobs(TILE.TREES, 40, 600, 16);
+        // height & moisture
+        for (let y = 0; y < WORLD_H; y++) {
+          for (let x = 0; x < WORLD_W; x++) {
+            const i = idx(x, y);
+            const t = grid[i];
+            let h = 0.5 + (Math.random() - 0.5) * 0.1;
+            if (t === TILE.MOUNTAIN) h += 0.25;
+            if (t === TILE.WATER) h -= 0.2;
+            let m = 0.4 + (Math.random() - 0.5) * 0.1 + (t === TILE.WATER ? 0.35 : 0);
+            if (t === TILE.SAND) m -= 0.15;
+            if (t === TILE.MOUNTAIN) m -= 0.05;
+            height[i] = clamp(h, 0, 1);
+            moisture[i] = clamp(m, 0, 1);
+          }
+        }
+        // Gold veins in mountains
+        let goldPlaced = 0;
+        for (let tries = 0; tries < 50000 && goldPlaced < 600; tries++) {
+          const x = (Math.random() * WORLD_W) | 0, y = (Math.random() * WORLD_H) | 0; const i = idx(x, y);
+          if (grid[i] === TILE.MOUNTAIN && Math.random() < 0.02) {
+            grid[i] = TILE.GOLD;
+            goldPlaced++;
+          }
+        }
+        return { grid, height, moisture, meta: { rainMeter: 0 }, villages: {} };
+      }
+      // Tick world (sampled)
+      function tickWorldSampled(world, rnd, weights, sampleCount) {
+          const { grid, moisture } = world;
+          const N = grid.length;
+          for (let k = 0; k < sampleCount; k++) {
+            const i = (Math.random() * N) | 0;
+            const t = grid[i];
+            // Moisture drift
+            if (t === TILE.WATER) moisture[i] = clamp(moisture[i] + 0.0006, 0, 1);
+            else moisture[i] = clamp(moisture[i] - 0.0003, 0, 1);
+            // Wheat
+            if (t === TILE.WHEAT) {
+              if (moisture[i] < 0.22 && Math.random() < 0.0007) grid[i] = TILE.GRASS;
+              if (moisture[i] > 0.7 && Math.random() < 0.001) spreadWheatAtIndex(world, i, rnd, weights);
+            }
+            // Desertification
+            if (t === TILE.GRASS && moisture[i] < 0.15 && Math.random() < 0.0004) grid[i] = TILE.SAND;
+          }
+          return world;
+      }
+      function spawnTile(world, kind, rnd) {
+        const { grid, moisture } = world;
+        const N = grid.length;
+        for (let tries = 0; tries < 200; tries++) {
+          const i = (Math.random() * N) | 0;
+          if (grid[i] === TILE.GRASS && moisture[i] > 0.28 && Math.random() < 0.55 + (weights.spawnBoost * 0.25)) {
+            grid[i] = kind;
+            return true;
+          }
+        }
+        return false;
+      }
+      function spreadWheatAtIndex(world, i, rnd, weights) {
+        const { grid } = world;
+        const x = i % WORLD_W, y = (i / WORLD_W) | 0;
+        const nbs = neighbors(x, y);
+        const nb = nbs[(Math.random() * nbs.length) | 0];
+        const j = nb.y * WORLD_W + nb.x;
+        if (grid[j] === TILE.GRASS && Math.random() < 0.5 + weights.spawnBoost * 0.2) grid[j] = TILE.WHEAT;
+      }
+      function doRain(world, rnd, weights) {
+        const { moisture, grid } = world;
+        const N = grid.length;
+        for (let k = 0; k < 8000; k++) {
+          const i = (Math.random() * N) | 0;
+          moisture[i] = clamp(moisture[i] + 0.12 + weights.chaos * (Math.random() - 0.5) * 0.05, 0, 1);
+          if (grid[i] === TILE.GRASS && moisture[i] > 0.75 && Math.random() < 0.003) grid[i] = TILE.WHEAT;
+        }
+      }
+      function doFlood(world, rnd, weights) {
+        const { grid, moisture } = world;
+        const N = grid.length;
+        const floodChance = 0.006 + weights.floodIntensity * 0.02;
+        for (let k = 0; k < 8000; k++) {
+          const i = (Math.random() * N) | 0;
+          if (grid[i] === TILE.WATER) {
+            const x = i % WORLD_W, y = (i / WORLD_W) | 0;
+            const nbs = neighbors(x, y);
+            const nb = nbs[(Math.random() * nbs.length) | 0];
+            const j = nb.y * WORLD_W + nb.x;
+            if (grid[j] !== TILE.WATER && Math.random() < floodChance) grid[j] = TILE.WATER;
+          }
+          if (grid[i] !== TILE.WATER) moisture[i] = clamp(moisture[i] + 0.03, 0, 1);
+        }
+      }
+      function neighbors(x, y) {
+        const out = [];
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const xx = x + dx, yy = y + dy;
+            if (xx >= 0 && yy >= 0 && xx < WORLD_W && yy < WORLD_H) out.push({ x: xx, y: yy });
+          }
+        }
+        return out;
+      }
+      function applyPlurality(world, counts, weights, rnd) {
+        let total = 0; let maxWord = ""; let maxCount = 0;
+        for (const [w, arr] of counts.entries()) {
+          total += arr.length; if (arr.length > maxCount) { maxCount = arr.length; maxWord = w; }
+        }
+        if (total === 0) return;
+        const share = maxCount / total;
+        if ((maxWord === 'sand' || maxWord === 'quicksand') && share > weights.quicksandSensitivity) {
+          // sandify (gentle)
+          const { grid, moisture } = world;
+          const N = grid.length;
+          for (let k = 0; k < 8000; k++) {
+            const i = (Math.random() * N) | 0;
+            if (grid[i] === TILE.GRASS && moisture[i] < 0.5 && Math.random() < 0.006) grid[i] = TILE.SAND;
+            if (grid[i] === TILE.WHEAT && Math.random() < 0.004) grid[i] = TILE.SAND;
+          }
+        }
+      }
+
+      // Place a village on a random grass tile
+      function placeVillage(world, name, rnd) {
+        const { grid } = world;
+        const N = grid.length;
+        for (let tries = 0; tries < 2000; tries++) {
+          const i = (Math.random() * N) | 0;
+          if (grid[i] === TILE.GRASS) {
+            grid[i] = TILE.VILLAGE;
+            world.villages[i] = name;
+            return true;
+          }
+        }
+        return false;
+      }
+      // Drawing function
+      function draw(canvas, world, view) {
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const { grid } = world;
+        const startX = view.x;
+        const startY = view.y;
+        const endX = Math.min(startX + view.w, WORLD_W);
+        const endY = Math.min(startY + view.h, WORLD_H);
+        for (let y = startY, sy = 0; y < endY; y++, sy++) {
+          const rowOff = y * WORLD_W;
+          for (let x = startX, sx = 0; x < endX; x++, sx++) {
+            const t = grid[rowOff + x];
+            const def = tileDefs[t];
+            ctx.fillStyle = def ? def.hex : '#000000';
+            ctx.fillRect(sx * view.scale, sy * view.scale, view.scale, view.scale);
+          }
+        }
+        ctx.strokeStyle = "rgba(0,0,0,0.08)";
+        for (let x = 0; x <= view.w; x++) {
+          ctx.beginPath(); ctx.moveTo(x * view.scale + 0.5, 0); ctx.lineTo(x * view.scale + 0.5, view.h * view.scale); ctx.stroke();
+        }
+        for (let y = 0; y <= view.h; y++) {
+          ctx.beginPath(); ctx.moveTo(0, y * view.scale + 0.5); ctx.lineTo(view.w * view.scale, y * view.scale + 0.5); ctx.stroke();
+        }
+      }
+    </script>
+  </body>
+</html>

@@ -1,876 +1,855 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Mundo — Pack 01</title>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    html,body { background:#0b1020; }
-    canvas { image-rendering: pixelated; }
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Mundo – Pack 01</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  html,body{background:#0b1020;color:#f1f5f9;font-family:sans-serif;}
+  input:focus{outline:none!important;}
+</style>
 </head>
 <body>
-  <div id="root"></div>
+<div id="root"></div>
 
-  <script type="text/babel">
-    const {useEffect,useMemo,useRef,useState} = React;
+<script type="text/babel">
 
-    /********************
-     * Version + notes  *
-     ********************/
-    const PACK_VERSION = "Pack 01 – Civilians, Economy, Events & Topic Arcs";
-    const BUILD_STAMP = "v2025-09-18";
+const {useState,useEffect,useMemo,useRef} = React;
 
-    /********************
-     * World constants  *
-     ********************/
-    const WORLD_W = 1000;
-    const WORLD_H = 1000;
-    const START_VIEW_W = 80;
-    const START_VIEW_H = 60;
-    const START_SCALE = 10; // px per tile at zoom=1
+/*************************************************
+ * Mundo – Pack 01
+ * Features:
+ *  - 1000×1000 world with up to 16 tile types
+ *  - 100 simulated citizens with per‑minute action rate (GAM slider)
+ *  - Resource system (Food, Wood) & village treasuries
+ *  - Village founding (10 unique userIds)
+ *  - Procedural events (30s scheduler)
+ *  - Topic arcs (e.g., volcano) with long-term triggers
+ *  - Lore mix control (Echo vs Vibe)
+ *  - Enlarged Signal Radar for word frequency over last 5 minutes
+ *  - Auto-scrolling chat and lore
+ *************************************************/
 
-    const TICK_MS = 250;                  // sim time slice
-    const SIM_SAMPLE_PER_TICK = 6000;     // sampled cells per tick
+// World dimensions
+const WORLD_W = 1000, WORLD_H = 1000;
+const START_SCALE = 10; // px per tile at zoom=1
+const VIEW_W = 80, VIEW_H = 60; // initial viewport size (tiles)
+const TICK_MS = 250; // simulation tick (milliseconds)
+const SAMPLE_PER_TICK = 6000; // number of random cells processed per tick
 
-    // Event cadence
-    const EVENT_CHECK_MS = 30000; // 30s
-    const LORE_HEARTBEAT_MS = 45000; // 45s
+// Tile definitions (0-15)
+const TILE = {
+  GRASS:0, WATER:1, WHEAT:2, SAND:3, WITCH:4,
+  TREES:5, GOLD:6, MOUNTAIN:7, VILLAGE:8
+};
+const tileDefs = Array(16).fill(null);
+// name, hex color, loreOnSpawn (0/1), lore text
+defTile(TILE.GRASS,"grass","#2F9E44",0,"");
+defTile(TILE.WATER,"water","#1D4ED8",0,"");
+defTile(TILE.WHEAT,"wheat","#D9B63A",0,"");
+defTile(TILE.SAND,"sand","#D4A373",0,"");
+defTile(TILE.WITCH,"witch","#D946EF",0,"A circle hums with old power.");
+defTile(TILE.TREES,"trees","#2A6F3E",0,"");
+defTile(TILE.GOLD,"gold","#FFD700",1,"A shimmer of gold appears...");
+defTile(TILE.MOUNTAIN,"mountain","#6B7280",0,"");
+defTile(TILE.VILLAGE,"village","#EAB308",1,"A village is founded: %NAME%.");
 
-    // Radar defaults
-    const RADAR_BIN_MS = 5000; // 5s bins
-    const RADAR_WINDOW_MIN = 5; // 5 minutes
+function defTile(id,name,colorHex,loreOn,lore) {
+  tileDefs[id] = {id,name,colorHex,loreOnSpawn:loreOn,lore};
+}
+const nameToTile = Object.fromEntries(Object.values(tileDefs).filter(Boolean).map(d=>[d.name,d.id]));
 
-    /****************
-     * RNG (Alea)   *
-     ****************/
-    function Alea(seedStr = "mundo") {
-      let s0 = mash(" "), s1 = mash(" "), s2 = mash(" ");
-      s0 -= mash(seedStr); if (s0 < 0) s0 += 1;
-      s1 -= mash(seedStr); if (s1 < 0) s1 += 1;
-      s2 -= mash(seedStr); if (s2 < 0) s2 += 1;
-      function mash(data) {
-        data = data.toString();
-        let n = 0xefc8249d;
-        for (let i = 0; i < data.length; i++) {
-          n += data.charCodeAt(i);
-          let h = 0.02519603282416938 * n;
-          n = h >>> 0; h -= n; h *= n; n = h >>> 0; h -= n; n += h * 0x100000000;
-        }
-        return (n >>> 0) * 2.3283064365386963e-10;
+function clamp(n,lo,hi){return Math.max(lo,Math.min(hi,n));}
+function hexToRgb(hex){
+  const h = hex.replace('#','');
+  return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];
+}
+function randomOne(arr,rnd){return arr[(rnd()*arr.length)|0];}
+function sanitizeWord(raw){const t=raw.trim().toLowerCase();return t.replace(/[^a-z0-9\-\s]+/g,"").trim();}
+function stableLocalUser(){
+  try{
+    const k="mundo_uid";
+    let v=localStorage.getItem(k);
+    if(!v){v=Math.random().toString(36).slice(2);localStorage.setItem(k,v);}
+    return v;
+  } catch {return Math.random().toString(36).slice(2);}
+}
+
+// Simple seedable RNG (Alea)
+function Alea(seedStr="mundo"){
+  let s0=mash(" "),s1=mash(" "),s2=mash(" ");
+  s0-=mash(seedStr); if(s0<0) s0+=1;
+  s1-=mash(seedStr); if(s1<0) s1+=1;
+  s2-=mash(seedStr); if(s2<0) s2+=1;
+  function mash(data){data=data.toString();let n=0xefc8249d;for(let i=0;i<data.length;i++){n+=data.charCodeAt(i);let h=0.02519603282416938*n;n=h>>>0;h-=n;h*=n;n=h>>>0;h-=n;n+=h*0x100000000;}return (n>>>0)*2.3283064365386963e-10;}
+  return function(){
+    const t=2091639*s0+2.3283064365386963e-10*0x100000000;
+    s0=s1; s1=s2; s2=t-(t|0);
+    return s2;
+  };
+}
+
+// Vibe lines for random citizens
+const vibeLines = {
+  wholesome: [
+    "The fields look patient today.","I’ve never seen a volcano before, but I’d sure love to.",
+    "Rain soon? My wheat hopes so.","Passing travelers say the river sings."
+  ],
+  snarky: [
+    "Quicksand discourse again? Bold.","If I say ‘sun’ enough will it listen?",
+    "Volcano when? Asking for a friend.","Gold?? In this economy?"
+  ],
+  slapstick: [
+    "Slipped in mud, 10/10 would slip again.","I saw a fish. It saw me. We nodded.",
+    "I brought a bucket. For reasons.","If I shout ‘flood’ do I get a boat?"
+  ]
+};
+
+// Generate list of 100 simulated citizens (color + noun combos)
+function makeCitizens(rnd){
+  const colors=["Amber","Azure","Crimson","Emerald","Indigo","Ivory","Jade","Saffron","Slate","Violet"];
+  const nouns=["Badger","Heron","Lynx","Marten","Moth","Otter","Osprey","Sparrow","Wren","Wolf"];
+  const names=[];
+  for(let c of colors){for(let n of nouns){names.push(`${c} ${n}`);}}
+  // shuffle
+  for(let i=names.length-1;i>0;i--){
+    const j=(rnd()*(i+1))|0; [names[i],names[j]]=[names[j],names[i]];
+  }
+  // assign vibes cyclically
+  const vibes=["wholesome","snarky","slapstick"];
+  return names.map((name,i)=>({name,vibe:vibes[i%3]}));
+}
+
+// Poisson random count for sim heartbeat (approx)
+function poisson(lambda){
+  let L=Math.exp(-lambda),k=0,p=1;
+  do { k++; p*=Math.random(); } while(p>L);
+  return k-1;
+}
+
+// Main App
+function App() {
+  const [seed,setSeed] = useState(()=>Math.random().toString(36).slice(2));
+  const rnd = useMemo(()=>Alea(seed),[seed]);
+  const [world,setWorld] = useState(()=>generateWorld(rnd));
+  const [messages,setMessages] = useState([]);
+  const [input,setInput] = useState("");
+  const [showAdmin,setShowAdmin] = useState(false);
+  const [lore,setLore] = useState(()=>[{id:1,ts:Date.now(),text:"Mundo awakens. A hush over sunlit grass."}]);
+  const [adminMessages,setAdminMessages] = useState([]);
+  const [adminInput,setAdminInput] = useState("");
+  const [customVerbs,setCustomVerbs] = useState([]);
+  // Director weights including gam (actions/min) and loreMix (0=all vibe,1=all echo)
+  const [weights,setWeights] = useState({
+    rainBias:0,floodIntensity:0.4,spawnBoost:0,chaos:0.0,quicksandSensitivity:0.35,
+    gam:10,loreMix:0.5
+  });
+  // WebSocket (optional)
+  const [wsUrl,setWsUrl] = useState("");
+  const wsRef = useRef(null);
+  const localUID = useMemo(()=>stableLocalUser(),[]);
+  // Topic tracker state & scheduled events
+  const [topics,setTopics] = useState({}); // {word: {score, users:Set}}
+  const [scheduled,setScheduled] = useState([]); // upcoming arcs [{topic, ts}]
+  // Plurality & sequences & petitions
+  const countsRef = useRef(new Map());
+  const sequenceRef = useRef({stage:0,lastTs:0});
+  const petitionsRef = useRef(new Map());
+  // Civilians & resources
+  const citizensRef = useRef(makeCitizens(rnd));
+  const [treasuries,setTreasuries] = useState({}); // idx -> {food,wood}
+  const resourcesRef = useRef({}); // userId -> {food,wood}
+  // Viewport and hover
+  const [view,setView] = useState({x:0,y:0,w:VIEW_W,h:VIEW_H,zoom:1,scale:START_SCALE});
+  const hoverRef = useRef({x:-1,y:-1,name:""});
+  // Canvas drawing
+  const canvasRef = useRef(null);
+  const rafRef = useRef(null);
+  // Radar chart
+  const radarRef = useRef(null);
+  const radarChartRef = useRef(null);
+  const binsRef = useRef(makeEmptyBins(60)); // 60 bins of 5s each
+  const vocabRef = useRef(["wheat","rain","sun","flood","sand","quicksand","found","donate",
+    "village","trees","wood","food","volcano","fire","gold","mountain","witch","festival"]);
+  // Narrative memory for long arcs
+  const memoryRef = useRef([]);
+
+  // Reseed world & citizens, preserve narrative memory & topics
+  useEffect(()=>{
+    setWorld(generateWorld(rnd));
+    citizensRef.current = makeCitizens(rnd);
+    pushLore(`The weave reshapes. New seed ${seed.slice(0,6)}.`);
+  },[rnd]);
+
+  // Main tick
+  useEffect(()=>{
+    let last=performance.now(),acc=0;
+    const loop=(now)=>{
+      acc+=now-last; last=now;
+      while(acc>=TICK_MS){
+        setWorld(w=>tickWorldSampled(w,rnd,weights));
+        acc-=TICK_MS;
       }
-      return function() {
-        const t = 2091639 * s0 + 2.3283064365386963e-10 * 0x100000000;
-        s0 = s1; s1 = s2; s2 = t - (t | 0);
-        return s2;
-      };
-    }
-
-    /****************
-     * Tiles (<=16) *
-     ****************/
-    const TILE = {
-      GRASS: 0, WATER: 1, WHEAT: 2, SAND: 3, WITCH: 4,
-      TREES: 5, GOLD: 6, MOUNTAIN: 7, VILLAGE: 8
+      drawCanvas(canvasRef.current,world,view);
+      rafRef.current = requestAnimationFrame(loop);
     };
+    rafRef.current = requestAnimationFrame(loop);
+    return ()=>cancelAnimationFrame(rafRef.current);
+  },[rnd,weights,world,view]);
 
-    const tileDefs = Array(16).fill(null);
-    function defTile(id, name, hex, loreOnSpawn, loreText) {
-      tileDefs[id] = { id, name, hex, loreOnSpawn: loreOnSpawn ? 1 : 0, lore: loreText || "" };
+  // Plurality cleanup (60s window)
+  useEffect(()=>{
+    const iv=setInterval(()=>{
+      const now=Date.now();
+      for(const [word,arr] of countsRef.current.entries()){
+        while(arr.length && now-arr[0]>60000) arr.shift();
+        if(!arr.length) countsRef.current.delete(word);
+      }
+    },2000);
+    return ()=>clearInterval(iv);
+  },[]);
+
+  // Lore heartbeat
+  useEffect(()=>{
+    const iv=setInterval(()=>{
+      const wheat=worldCount(world,TILE.WHEAT);
+      const water=worldCount(world,TILE.WATER);
+      const villages=Object.keys(world.villages).length;
+      const mood=world.meta.rainMeter>0.6?"sodden":world.meta.rainMeter<0.2?"parched":"temperate";
+      const line=randomOne([
+        `Farmers reckon ${wheat} plots show promise; the land feels ${mood}.`,
+        `${villages||'No'} villages dot the map; rivers cover ${water} tiles in mirror-light.`,
+        `Archivists mark the winds: rain index ${(world.meta.rainMeter||0).toFixed(2)}.`,
+      ],Math.random);
+      pushLore(line);
+      memoryRef.current.push({ts:Date.now(),line});
+      // Decay topic scores (5% per heartbeat)
+      const decay=0.95;
+      const newTopics={};
+      for(const [word,obj] of Object.entries(topics)){
+        const newScore=obj.score*decay;
+        if(newScore>1) newTopics[word]={...obj,score:newScore};
+      }
+      setTopics(newTopics);
+    },45000);
+    return ()=>clearInterval(iv);
+  },[topics,world]);
+
+  // Events scheduler
+  useEffect(()=>{
+    const iv=setInterval(()=>{
+      evaluateEvents();
+      evaluateTopics();
+    },30000);
+    return ()=>clearInterval(iv);
+  },[topics,scheduled,weights,world,treasuries]);
+
+  // Sim heartbeat (global actions/min)
+  useEffect(()=>{
+    const iv=setInterval(()=>{
+      const perMin = clamp(weights.gam,0,120);
+      const lambda = perMin/60;
+      const acts = poisson(lambda);
+      for(let i=0;i<acts;i++){
+        const citizen = randomOne(citizensRef.current,Math.random);
+        simAct(citizen);
+      }
+    },1000);
+    return ()=>clearInterval(iv);
+  },[weights.gam]);
+
+  // WebSocket (optional) – echo to others
+  useEffect(()=>{
+    if(!wsUrl) return;
+    try{
+      const ws=new WebSocket(wsUrl);
+      wsRef.current=ws;
+      ws.onopen=()=>pushLore(`Connected to ${wsUrl}`);
+      ws.onmessage=(e)=>{
+        let m; try{m=JSON.parse(e.data);}catch{return;}
+        if(m.type==="chat") ingestChat(m.user,m.text,false,m.userId);
+        if(m.type==="admin" && typeof m.cmd==='string') runAdminCommand(m.cmd);
+        if(m.type==="lore" && m.text) pushLore(m.text);
+      };
+      ws.onclose=()=>pushLore(`Disconnected from ${wsUrl}`);
+      ws.onerror=()=>pushLore(`WS error on ${wsUrl}`);
+      return ()=>ws.close();
+    } catch {pushLore(`Failed to connect ${wsUrl}`);}
+  },[wsUrl]);
+
+  function wsSend(obj){
+    if(wsRef.current && wsRef.current.readyState===1){
+      try{wsRef.current.send(JSON.stringify(obj));}catch{}
     }
-    defTile(TILE.GRASS,    "grass",    "#2F9E44", 0, "");
-    defTile(TILE.WATER,    "water",    "#1D4ED8", 0, "");
-    defTile(TILE.WHEAT,    "wheat",    "#D9B63A", 0, "");
-    defTile(TILE.SAND,     "sand",     "#D4A373", 0, "");
-    defTile(TILE.WITCH,    "witch",    "#D946EF", 0, "A circle hums with old power.");
-    defTile(TILE.TREES,    "trees",    "#2A6F3E", 0, "");
-    defTile(TILE.GOLD,     "gold",     "#FFD700", 1, "A shimmer of gold appears...");
-    defTile(TILE.MOUNTAIN, "mountain", "#6B7280", 0, "");
-    defTile(TILE.VILLAGE,  "village",  "#EAB308", 1, "A village is founded: %NAME%.");
+  }
 
-    const nameToTile = Object.fromEntries(Object.values(tileDefs).filter(Boolean).map(d => [d.name, d.id]));
+  // Signal Radar initialization (Chart.js)
+  useEffect(()=>{
+    const ctx=radarRef.current.getContext("2d");
+    radarChartRef.current = new Chart(ctx,{
+      type:'line',
+      data:{
+        labels:Array(60).fill(""),
+        datasets: vocabRef.current.slice(0,5).map((kw,i)=>({
+          label:kw,data:Array(60).fill(0),
+          borderColor:`hsl(${i*72},100%,60%)`,backgroundColor:'transparent',borderWidth:1
+        })).concat([{
+          label:'chatter',data:Array(60).fill(0),
+          borderColor:'rgba(148,163,184,0.4)',backgroundColor:'rgba(148,163,184,0.1)',borderWidth:1
+        }])
+      },
+      options:{
+        responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{position:'top',labels:{color:'white',boxWidth:10}}},
+        scales:{y:{beginAtZero:true,ticks:{color:'white'},grid:{color:'rgba(255,255,255,0.1)'}},
+                x:{ticks:{display:false}}}
+      }
+    });
+  },[]);
 
-    function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
-    function hexToRgb(hex) { const h = hex.replace('#',''); return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; }
+  // Radar chart update every 2s
+  useEffect(()=>{
+    const iv=setInterval(()=>{
+      updateRadarChart();
+    },2000);
+    return ()=>clearInterval(iv);
+  },[]);
 
-    /****************
-     * Helpers      *
-     ****************/
-    function sanitizeWord(raw) { const t = raw.trim().toLowerCase(); return t.replace(/[^a-z0-9\-\s]+/g, "").trim(); }
-    function randomOne(arr, rnd) { return arr[(rnd() * arr.length) | 0]; }
-    function stableLocalUser() { try { const k = "mundo_uid"; let v = localStorage.getItem(k); if (!v) { v = Math.random().toString(36).slice(2); localStorage.setItem(k, v); } return v; } catch { return Math.random().toString(36).slice(2); } }
+  // radar bins shift every 5s
+  useEffect(()=>{
+    const iv=setInterval(()=>{
+      // shift
+      binsRef.current.pop();
+      binsRef.current.unshift(makeBin());
+      updateRadarChart();
+    },5000);
+    return ()=>clearInterval(iv);
+  },[]);
 
-    // Vibes
-    const VIBES = ["wholesome","snarky","slapstick"];
-
-    // Colors × Nouns → 100 names
-    const COLORS = ["Amber","Azure","Crimson","Emerald","Indigo","Ivory","Jade","Saffron","Slate","Violet"];
-    const NOUNS  = ["Badger","Heron","Lynx","Marten","Moth","Otter","Osprey","Sparrow","Wren","Wolf"];
-
-    // Topic tracker terms allowlist (editable later)
-    const TOPIC_ALLOW = new Set(["volcano","comet","quicksand","festival","famine","fire","gold","witch"]);
-
-    // Radar tracked keywords (editable in UI)
-    const DEFAULT_KEYWORDS = [
-      "wheat","rain","sun","flood","sand","quicksand","found","donate","village","trees","wood","food","volcano","fire","gold","mountain","witch","festival"
-    ];
-
-    /****************
-     * App shell    *
-     ****************/
-    function App() {
-      return (
-        <div className="min-h-screen w-full bg-slate-950 text-slate-100">
-          <Header />
-          <Main />
-          <Footer />
-        </div>
-      );
+  // Ingest chat messages into radar bins
+  function tallyRadar(txt){
+    const words=txt.toLowerCase().split(/\s+/);
+    const bin=binsRef.current[0];
+    let tracked=false;
+    for(const w of words){
+      for(const kw of vocabRef.current){
+        if(w===kw || w.startsWith(`${kw} `)||w.endsWith(` ${kw}`)){
+          bin[kw]=(bin[kw]||0)+1; tracked=true;
+        }
+      }
     }
+    if(!tracked) bin['chatter']=(bin['chatter']||0)+1;
+  }
 
-    function Header() {
-      return (
-        <header className="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/70 backdrop-blur">
-          <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
-            <div className="flex items-center gap-3">
-              <div className="h-8 w-8 rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-400" />
-              <div className="text-xl font-semibold tracking-tight">Mundo — {PACK_VERSION}</div>
-            </div>
-            <div className="text-xs text-slate-400">{BUILD_STAMP} • 1000×1000 • Pan (WASD) • Zoom (±)</div>
-          </div>
-        </header>
-      );
+  function updateRadarChart(){
+    const chart=radarChartRef.current;
+    if(!chart) return;
+    // Determine top K
+    const vocab=vocabRef.current;
+    const totals={};
+    for(const kw of vocab){
+      totals[kw]=0;
+      for(const bin of binsRef.current) totals[kw]+=bin[kw]||0;
     }
+    const entries=Object.entries(totals).filter(([kw])=>kw!=='chatter');
+    entries.sort((a,b)=>b[1]-a[1]);
+    const top=entries.slice(0,5).map(([kw])=>kw);
+    // update dataset structure
+    const labels=binsRef.current.map((_,i)=>`${(binsRef.current.length-i)*5}s`);
+    const datasets=top.map((kw,i)=>({
+      label:kw,
+      data:binsRef.current.map(bin=>bin[kw]||0),
+      borderColor:`hsl(${i*72},100%,60%)`,
+      backgroundColor:'transparent',
+      borderWidth:1
+    }));
+    datasets.push({
+      label:'chatter',
+      data:binsRef.current.map(bin=>bin['chatter']||0),
+      borderColor:'rgba(148,163,184,0.4)',
+      backgroundColor:'rgba(148,163,184,0.1)',
+      borderWidth:1
+    });
+    chart.data.labels=labels;
+    chart.data.datasets=datasets;
+    chart.update();
+  }
 
-    function Footer() {
-      return (
-        <footer className="border-t border-slate-800/80">
-          <div className="mx-auto max-w-7xl px-4 py-3 text-xs text-slate-400">
-            Tip: Try the sequence: <code>eye-of-newt</code> → <code>toe-of-frog</code> → <code>wing-of-bat</code>.
-          </div>
-        </footer>
-      );
+  function makeEmptyBins(n){
+    const arr=[];
+    for(let i=0;i<n;i++) arr.push(makeBin());
+    return arr;
+  }
+  function makeBin(){return {};}
+
+  function pushLore(text){
+    setLore(l=>[{id:Math.random(),ts:Date.now(),text},...l].slice(0,200));
+  }
+
+  // Chat ingestion
+  function ingestChat(user,txt,echoWS=true,userId){
+    tallyRadar(txt);
+    const uid=userId || localUID;
+    setMessages(m=>[...m.slice(-299),{id:Math.random(),user,userId:uid,text:txt,ts:Date.now()}]);
+    if(echoWS) wsSend({type:"chat",user,userId:uid,text:txt});
+    applyRules(txt,uid);
+    updateChatScroll();
+  }
+
+  function applyRules(txt,uid){
+    // track for plurality
+    const key=sanitizeWord(txt);
+    if(key){
+      if(!countsRef.current.has(key)) countsRef.current.set(key,[]);
+      countsRef.current.get(key).push(Date.now());
     }
+    // track topics (echo half of messages)
+    if(Math.random()<weights.loreMix){
+      const words=txt.toLowerCase().split(/\s+/);
+      const userTopics=new Set();
+      for(const w of words){
+        if(!topics[w]) topics[w]={score:0,users:new Set()};
+        const obj=topics[w];
+        if(!obj.users.has(uid)){
+          obj.users.add(uid);
+          obj.score+=20;
+          userTopics.add(w);
+        } else {
+          obj.score+=5;
+        }
+      }
+      if(userTopics.size>0) setTopics({...topics});
+    }
+    const lower=txt.toLowerCase();
+    let w2=world;
+    // simple actions
+    if(lower==="wheat"){ spawnTile(w2,TILE.WHEAT,rnd,weights); }
+    if(lower==="rain"){ w2.meta.rainMeter=clamp((w2.meta.rainMeter||0)+0.04+weights.rainBias*0.04,0,1);
+      if(w2.meta.rainMeter>0.7+(weights.chaos*(Math.random()-0.5))){
+        doRain(w2,rnd,weights);
+        pushLore("Clouds gather. A soft percussion begins. Mundo drinks.");
+        w2.meta.rainMeter=0;
+      }
+    }
+    if(lower==="sun"){ w2.meta.rainMeter=clamp((w2.meta.rainMeter||0)-0.06,0,1); }
+    if(lower==="flood"){ if(Math.random()<0.2+weights.floodIntensity*0.3){ doFlood(w2,rnd,weights); pushLore("Rivers swell their banks. Lowlands watch with concern."); } }
+    // custom verbs (spawn/chance)
+    for(const v of customVerbs){
+      if(lower===v.word){
+        if(v.kind==='spawn'){ spawnTile(w2,v.payload.tile||TILE.WHEAT,rnd,weights);
+          const def=tileDefs[v.payload.tile||TILE.WHEAT]; if(def.loreOnSpawn) pushLore(def.lore);
+        }
+        if(v.kind==='chance'){
+          const meter=`${v.payload.meter||'rain'}Meter`;
+          w2.meta[meter]=clamp((w2.meta[meter]||0)+v.payload.amount||0.05,0,1);
+          if(meter==='rainMeter' && w2.meta[meter]>0.65){ doRain(w2,rnd,weights); w2.meta[meter]=0; pushLore(`Skies answer '${v.word}'.`); }
+        }
+      }
+    }
+    // village founding petitions
+    const mFound=/^found\s+([a-z0-9\-\s]{2,20})$/.exec(lower);
+    if(mFound){
+      const name=mFound[1].replace(/\s+/g,' ').trim();
+      const set=petitionsRef.current.get(name)||new Set();
+      set.add(uid); petitionsRef.current.set(name,set);
+      const have=set.size; const need=10;
+      pushLore(`Petitions for village '${name}': ${have}/${need}`);
+      if(have>=need){
+        const placed=placeVillage(w2,name,rnd);
+        if(placed){ pushLore(`A village is founded: ${name}.`); petitionsRef.current.delete(name); }
+      }
+    }
+    // donations
+    const mDon=/^donate\s+(food|wood)\s+(\d+)\s+to\s+([a-z0-9\-\s]{2,20})$/.exec(lower);
+    if(mDon){
+      const res=mDon[1],amt=parseInt(mDon[2]); const vName=mDon[3].replace(/\s+/g,' ').trim();
+      // check ledger
+      const ledger=resourcesRef.current[uid]||{food:0,wood:0};
+      if(ledger[res]>=amt){
+        ledger[res]-=amt; resourcesRef.current[uid]=ledger;
+        const idx=world.villagesByName[vName];
+        if(idx!==undefined){
+          const t=treasuries[idx]||{food:0,wood:0};
+          t[res]+=amt; setTreasuries({...treasuries,[idx]:t});
+          pushLore(`${res} donation received by ${vName}: +${amt}`);
+        } else {
+          pushLore(`No such village '${vName}'.`);
+        }
+      } else {
+        pushLore(`You lack ${amt} ${res}.`);
+      }
+    }
+    // sequences (witch circle)
+    advanceSequence(lower,sequenceRef,(stage)=>{
+      if(stage===1) pushLore("A hush. Something old wakes.");
+      if(stage===2) pushLore("Crows spiral. The air smells of iron.");
+    },()=>{
+      summonWitchCircle(w2,rnd);
+      pushLore("A witch circle blossoms in the bog. Songs in a tongue you almost recall.");
+    });
+    // plurality
+    applyPlurality(w2,countsRef.current,weights,rnd);
+    setWorld({...w2});
+  }
 
-    /***********************
-     * Main world component *
-     ***********************/
-    function Main() {
-      const [seed, setSeed] = useState(() => Math.random().toString(36).slice(2));
-      const rnd = useMemo(() => Alea(seed), [seed]);
+  // Admin Chat ingestion
+  function ingestAdmin(txt){
+    if(!txt) return;
+    setAdminMessages(a=>[...a,{id:Math.random(),user:"ADMIN",text:txt,ts:Date.now()}]);
+    wsSend({type:"admin",cmd:txt});
+    runAdminCommand(txt);
+    updateAdminScroll();
+  }
 
-      // World state
-      const [world, setWorld] = useState(() => makeInitialWorld(rnd));
-      const [view, setView] = useState({ x:0,y:0,w:START_VIEW_W,h:START_VIEW_H,zoom:1,scale:START_SCALE });
-      const [messages, setMessages] = useState([]);
-      const [input, setInput] = useState("");
-      const [showAdmin, setShowAdmin] = useState(true);
-      const [lore, setLore] = useState(() => [{ id: 1, ts: Date.now(), text: "Mundo awakens. A hush over sunlit grass." }]);
+  function runAdminCommand(cmd){
+    const parts=cmd.trim().split(/\s+/);
+    const head=(parts.shift()||'').toLowerCase();
+    if(!head) return;
+    if(head==='set' && parts[0]==='weight'){
+      const key=parts[1]; const val=parseFloat(parts[2]);
+      if(key in weights && !Number.isNaN(val)){
+        setWeights(w=>({...w,[key]:clamp(val,0,120)}));
+        pushLore(`Director set weight ${key} → ${val}`);
+      } return;
+    }
+    if(head==='add' && parts[0]==='spawn'){
+      const word=(parts[1]||'').toLowerCase();
+      const name=(parts[2]||'wheat').toLowerCase();
+      const tile=nameToTile[name]??TILE.WHEAT;
+      if(word){
+        setCustomVerbs(v=>[...v.filter(x=>x.word!==word),{word,kind:'spawn',payload:{tile}}]);
+        pushLore(`Director added spawn verb '${word}' → ${tileDefs[tile].name}`);
+      } return;
+    }
+    if(head==='add' && parts[0]==='chance'){
+      const word=(parts[1]||'').toLowerCase();
+      const meter=(parts[2]||'rain').toLowerCase();
+      const amount=parseFloat(parts[3]||'0.05');
+      if(word){
+        setCustomVerbs(v=>[...v.filter(x=>x.word!==word),{word,kind:'chance',payload:{meter,amount}}]);
+        pushLore(`Director added chance verb '${word}' → ${meter}+${amount}`);
+      } return;
+    }
+    if(head==='remove'){
+      const word=(parts[0]||'').toLowerCase();
+      setCustomVerbs(v=>v.filter(x=>x.word!==word));
+      pushLore(`Director removed verb '${word}'`);
+      return;
+    }
+    if(head==='lore'){
+      const text=cmd.slice(cmd.indexOf(' ')+1);
+      if(text){ pushLore(text); wsSend({type:'lore',text}); }
+      return;
+    }
+    if(head==='reseed'){ setSeed(Math.random().toString(36).slice(2)); return; }
+    if(head==='reset'){ // reset narrative & topics
+      setTopics({});
+      setScheduled([]);
+      pushLore("Narrative threads are cleared.");
+      return;
+    }
+    // fallback: treat as user word from admin
+    ingestChat("ADMIN",cmd,true,"ADMIN");
+  }
 
-      // Director weights / controls
-      const [weights, setWeights] = useState({
-        rainBias: 0, floodIntensity: 0.4, spawnBoost: 0, chaos: 0.0, quicksandSensitivity: 0.35,
-        gam: 10,              // Global Actions / Minute (0–60)
-        loreMix: 0.5,         // 0=vibe only, 1=echo only
-        eventsEnabled: true,
-        eventRate: 1.0,       // global multiplier
-      });
+  // Civilians actions
+  function simAct(citizen){
+    const r=Math.random();
+    if(r<0.40){
+      // talk – vibe vs echo
+      const vibe=citizen.vibe;
+      if(Math.random()<weights.loreMix) {
+        // echo
+        ingestChat(citizen.name,randomOne(vibeLines[vibe],Math.random),true,citizen.name);
+      } else {
+        ingestChat(citizen.name,randomOne(vibeLines[vibe],Math.random),true,citizen.name);
+      }
+    }
+    else if(r<0.65){
+      ingestChat(citizen.name,"wheat",true,citizen.name);
+    }
+    else if(r<0.90){
+      ingestChat(citizen.name,"rain",true,citizen.name);
+    }
+    else if(r<0.93){
+      ingestChat(citizen.name,"sun",true,citizen.name);
+    }
+    else if(r<0.96){
+      ingestChat(citizen.name,"flood",true,citizen.name);
+    }
+    else if(r<0.98){
+      ingestChat(citizen.name,"sand",true,citizen.name);
+    }
+    else {
+      ingestChat(citizen.name,"quicksand",true,citizen.name);
+    }
+    // Attempt donation or petition
+    if(Math.random()<0.05){
+      // maybe found
+      const names=["Lakeside","Pinewood","Meadowbrook","Riverton","Hillcrest","Oakton","Pebbleton","Reedford","Thornvale","Elmstead"];
+      const v=randomOne(names,Math.random);
+      ingestChat(citizen.name,`found ${v}`,true,citizen.name);
+    }
+    if(Math.random()<0.05){
+      // maybe donate
+      const villages=Object.keys(world.villagesByName);
+      if(villages.length>0){
+        const v=randomOne(villages,Math.random);
+        const res=Math.random()<0.5?"food":"wood";
+        const amt=1+((Math.random()*3)|0);
+        ingestChat(citizen.name,`donate ${res} ${amt} to ${v}`,true,citizen.name);
+      }
+    }
+  }
 
-      // Optional WS
-      const [wsUrl, setWsUrl] = useState("");
-      const wsRef = useRef(null);
+  // Topic evaluation
+  function evaluateTopics(){
+    for(const [word,obj] of Object.entries(topics)){
+      const sc=obj.score, uCount=obj.users.size;
+      // thresholds: whisper 50, murmur 100, omen 200 (u>=25), schedule 300 (u>=40)
+      if(sc>300 && uCount>=40 && !scheduled.find(e=>e.topic===word)){
+        const ts=Date.now()+1000*60*60*24*(2+Math.random()); // 2-3 days
+        setScheduled(s=>[...s,{topic:word,ts}]);
+        pushLore(`Whispers gather: ${word} will shape the world soon.`);
+      }
+      else if(sc>200 && uCount>=25){
+        pushLore(`Omen: The air is thick with talk of ${word}.`);
+      }
+      else if(sc>100){
+        pushLore(`Murmur: You hear faint talk of ${word}.`);
+      }
+      else if(sc>50){
+        pushLore(`Whisper: Someone mentions ${word}.`);
+      }
+    }
+  }
 
-      // Radar (time-series of keywords)
-      const [radarCfg, setRadarCfg] = useState({ winMin: RADAR_WINDOW_MIN, binMs: RADAR_BIN_MS, topK: 5, showChatter: true, vocab: DEFAULT_KEYWORDS.join(", ") });
-      const radarRef = useRef(makeRadar(radarCfg.winMin, radarCfg.binMs, DEFAULT_KEYWORDS));
+  // Events evaluation
+  function evaluateEvents(){
+    // Sudden Shower
+    if(world.meta.rainMeter>0.65){
+      doRain(world,rnd,weights);
+      pushLore("Sudden Shower: Gentle rain cools the earth.");
+      world.meta.rainMeter=0;
+    }
+    // Vein Glimmer (not implemented in visuals)
+    // River Swell
+    if(worldCount(world,TILE.WATER)>20000 && weights.floodIntensity>0.5 && Math.random()<0.1){
+      doFlood(world,rnd,weights); pushLore("River Swell: Rivers surge unexpectedly.");
+    }
+    // Forest Fire
+    if(worldCount(world,TILE.TREES)>30000 && world.meta.rainMeter<0.2 && Math.random()<0.05){
+      // convert some trees to sand
+      for(let i=0;i<2000;i++){
+        const idx=(Math.random()*world.grid.length)|0;
+        if(world.grid[idx]===TILE.TREES) world.grid[idx]=TILE.SAND;
+      }
+      pushLore("Forest Fire: Flames lick the dry woods, leaving charred ground.");
+    }
+    // Village Festivals
+    for(const idx in treasuries){
+      const t=treasuries[idx];
+      if(t.food>=25){
+        // buff: more wheat & rain around village
+        const {x,y} = {x:idx % WORLD_W, y:(idx/WORLD_W)|0};
+        for(let i=0;i<1000;i++){
+          const xx=clamp(x+((Math.random()*10)|0)-5,0,WORLD_W-1);
+          const yy=clamp(y+((Math.random()*10)|0)-5,0,WORLD_H-1);
+          const id=yy*WORLD_W+xx;
+          if(world.grid[id]===TILE.GRASS) world.grid[id]=TILE.WHEAT;
+        }
+        world.meta.rainMeter+=0.1;
+        pushLore(`Festival in ${world.villages[idx]}: The harvest bursts in dance.`);
+        // consume food
+        treasuries[idx].food-=25;
+        setTreasuries({...treasuries});
+      }
+    }
+  }
 
-      // Topic tracker & scheduled arcs
-      const topicsRef = useRef({ scores: new Map(), users: new Map(), scheduled: [] });
+  // Plurality (quicksand)
+  function applyPlurality(w,counts,weights,rnd){
+    let total=0,maxWord="",maxCount=0;
+    for(const [wrd,arr] of counts.entries()){ total+=arr.length; if(arr.length>maxCount){maxCount=arr.length;maxWord=wrd;} }
+    if(total===0) return;
+    const share=maxCount/total;
+    if((maxWord==="sand"||maxWord==="quicksand") && share>weights.quicksandSensitivity) sandify(w);
+  }
 
-      // Citizens (100 simulated users)
-      const citizensRef = useRef(makeCitizens());
+  // Sequence for Witch Circle
+  function advanceSequence(word,ref,onStage,onComplete){
+    const seq=["eye-of-newt","toe-of-frog","wing-of-bat"];
+    const now=Date.now(), timeout=45000;
+    const st=ref.current;
+    if(now-st.lastTs>timeout) st.stage=0;
+    if(word===seq[st.stage]){
+      st.stage+=1; st.lastTs=now; onStage(st.stage);
+      if(st.stage>=seq.length){ onComplete(); st.stage=0; }
+    }
+  }
 
-      // Villages & petitions & treasuries
-      const petitionsRef = useRef(new Map()); // name -> Set(userIds)
-      const villagesRef = useRef({ byIndex: {}, byName: {} }); // i -> name; name -> {i, food, wood, contributors: Map(userId->num)}
-
-      const canvasRef = useRef(null);
-      const rafRef = useRef(null);
-      const hoverRef = useRef({ x:-1,y:-1,name:"" });
-
-      // ================= Reseed =================
-      useEffect(() => {
-        setWorld(makeInitialWorld(rnd));
-        radarRef.current = makeRadar(radarCfg.winMin, radarCfg.binMs, getVocabArray(radarCfg.vocab));
-        topicsRef.current = { scores: new Map(), users: new Map(), scheduled: [] };
-        petitionsRef.current = new Map();
-        villagesRef.current = { byIndex: {}, byName: {} };
-        citizensRef.current = makeCitizens();
-        pushLore(`The weave reshapes. New seed ${seed.slice(0,6)}.`);
-      }, [rnd]);
-
-      // ================= Sim loop =================
-      useEffect(() => {
-        let last = performance.now(), acc = 0;
-        const loop = (now) => {
-          acc += now - last; last = now;
-          while (acc >= TICK_MS) {
-            setWorld((w) => tickWorldSampled(w, rnd, weights));
-            acc -= TICK_MS;
+  // Generation & ticks
+  function generateWorld(rnd){
+    const grid=new Uint8Array(WORLD_W*WORLD_H);
+    const height=new Float32Array(WORLD_W*WORLD_H);
+    const moisture=new Float32Array(WORLD_W*WORLD_H);
+    const idx=(x,y)=>y*WORLD_W+x;
+    // base grass
+    grid.fill(TILE.GRASS);
+    // random blobs
+    function blobs(kind,count,steps,spread){
+      for(let b=0;b<count;b++){
+        let x=(rnd()*WORLD_W)|0, y=(rnd()*WORLD_H)|0;
+        for(let s=0;s<steps;s++){
+          const r=(rnd()*spread)|0;
+          for(let i=0;i<r;i++){
+            const xx=clamp(x+((rnd()<0.5?-1:1)*(rnd()*2)|0),0,WORLD_W-1);
+            const yy=clamp(y+((rnd()<0.5?-1:1)*(rnd()*2)|0),0,WORLD_H-1);
+            grid[idx(xx,yy)]=kind;
           }
-          draw(canvasRef.current, world, view);
-          rafRef.current = requestAnimationFrame(loop);
-        };
-        rafRef.current = requestAnimationFrame(loop);
-        return () => cancelAnimationFrame(rafRef.current);
-      }, [rnd, weights, world, view]);
-
-      // ================= Radar redraw =================
-      const radarCanvasRef = useRef(null);
-      useEffect(() => {
-        const iv = setInterval(() => drawRadar(radarCanvasRef.current, radarRef.current, radarCfg, world.meta.eventsLog), 500);
-        return () => clearInterval(iv);
-      }, [radarCfg, world.meta.eventsLog]);
-
-      // ================= Lore heartbeat =================
-      useEffect(() => {
-        const iv = setInterval(() => {
-          const line = makeLoreBeat(world, weights, radarRef.current, topicsRef.current);
-          if (line) pushLore(line);
-        }, LORE_HEARTBEAT_MS);
-        return () => clearInterval(iv);
-      }, [world, weights]);
-
-      // ================= Events scheduler =================
-      useEffect(() => {
-        const iv = setInterval(() => {
-          if (!weights.eventsEnabled) return;
-          runEvents(world, setWorld, rnd, weights, villagesRef.current, (text, tag) => pushLoreWithMarker(text, tag, world));
-          // topic arcs (e.g., volcano)
-          runTopicArcs(world, setWorld, rnd, topicsRef.current, (text, tag) => pushLoreWithMarker(text, tag, world));
-        }, EVENT_CHECK_MS / Math.max(0.2, weights.eventRate));
-        return () => clearInterval(iv);
-      }, [world, weights, rnd]);
-
-      // ================= Citizens (GAM) =================
-      useEffect(() => {
-        const uid = stableLocalUser(); // host player id if needed
-        const iv = setInterval(() => {
-          const perMin = clamp(weights.gam, 0, 60);
-          const lambdaPerSec = perMin / 60;
-          const actsThisSecond = poisson(lambdaPerSec);
-          for (let k = 0; k < actsThisSecond; k++) {
-            const c = randomOne(citizensRef.current, Math.random);
-            simCitizenAct(c, world, villagesRef.current, petitionsRef.current, weights, topicsRef.current, radarRef.current, ingestChat, pushLore);
-          }
-        }, 1000);
-        return () => clearInterval(iv);
-      }, [weights.gam, world]);
-
-      // ================= Plurality cleanup =================
-      const countsRef = useRef(new Map()); // not shown now, but used for sand/quicksand
-      useEffect(() => {
-        const iv = setInterval(() => {
-          const now = Date.now();
-          for (const [word, arr] of countsRef.current.entries()) {
-            while (arr.length && now - arr[0] > 60000) arr.shift();
-            if (!arr.length) countsRef.current.delete(word);
-          }
-        }, 2000);
-        return () => clearInterval(iv);
-      }, []);
-
-      // ================= WS (optional) =================
-      useEffect(() => {
-        if (!wsUrl) return;
-        try {
-          const ws = new WebSocket(wsUrl);
-          wsRef.current = ws;
-          ws.onopen = () => pushLore(`Connected to ${wsUrl}`);
-          ws.onmessage = (e) => { try { const m = JSON.parse(e.data); if (m.type === 'chat') ingestChat(m.user, m.text, false, m.userId); } catch {} };
-          ws.onclose = () => pushLore(`Disconnected from ${wsUrl}`);
-          ws.onerror = () => pushLore(`WS error on ${wsUrl}`);
-          return () => ws.close();
-        } catch { pushLore(`Failed to connect ${wsUrl}`); }
-      }, [wsUrl]);
-
-      function wsSend(obj) { if (wsRef.current && wsRef.current.readyState === 1) { try { wsRef.current.send(JSON.stringify(obj)); } catch {} } }
-
-      // ================= Chat ingest =================
-      function ingestChat(user, txt, echoWS = true, userId) {
-        const uid = userId || (user && user.__uid) || makeUserId(user);
-        const msg = { id: Math.random(), user, userId: uid, text: txt, ts: Date.now() };
-        setMessages(M => [...M.slice(-299), msg]);
-        if (echoWS) wsSend({ type: 'chat', user, userId: uid, text: txt });
-        applyRules(txt, uid, user);
-        // Radar
-        updateRadar(radarRef.current, txt);
-        // Topics
-        updateTopics(topicsRef.current, txt, uid);
-      }
-
-      function handleSend() {
-        const txt = input.trim(); if (!txt) return;
-        const me = { name: "You", __uid: stableLocalUser() };
-        ingestChat(me, txt, true, me.__uid); setInput("");
-      }
-
-      // ================= Rules =================
-      function applyRules(txt, uid, user) {
-        const lower = txt.toLowerCase();
-        let w2 = world;
-
-        // A) Founding villages
-        const mv = /^found\s+([a-z][a-z0-9\- ]{1,20})$/i.exec(lower);
-        if (mv) {
-          const name = mv[1].replace(/\s+/g,' ').trim();
-          const set = petitionsRef.current.get(name) || new Set();
-          set.add(uid); petitionsRef.current.set(name, set);
-          pushLore(`Petitions for village '${name}': ${set.size}/10`);
-          if (set.size >= 10) {
-            const placed = placeVillage(w2, name, Alea(name+seed));
-            if (placed) { ensureVillageRecords(villagesRef.current, placed, name); pushLoreWithMarker(`A village is founded: ${name}.`, 'village'); petitionsRef.current.delete(name); }
-          }
-        }
-
-        // B) Donations: "donate food 3 [to <name>]"
-        const md = /^donate\s+(food|wood)\s+(\d+)(?:\s+(?:to\s+)?([a-z0-9\- ]{1,20}))?$/i.exec(lower);
-        if (md) {
-          const kind = md[1]; const amt = Math.max(1, Math.min(99, parseInt(md[2])));
-          const target = md[3] && md[3].trim();
-          donateToVillage(villagesRef.current, kind, amt, target, uid, user?.name || 'anon');
-          pushLoreWithMarker(`${user?.name||'Someone'} donates ${amt} ${kind} ${target?('to '+target):''}.`, 'donate');
-        }
-
-        // C) word = action
-        if (lower === 'wheat') spawnTile(w2, TILE.WHEAT, Alea(seed+Date.now()), weights);
-        if (lower === 'trees') spawnTile(w2, TILE.TREES, Alea(seed+Date.now()), weights);
-
-        // D) word = chance
-        if (lower === 'rain') { w2.meta.rainMeter = clamp((w2.meta.rainMeter||0)+0.05+weights.rainBias*0.05,0,1); if (w2.meta.rainMeter>0.7) { doRain(w2); w2.meta.rainMeter=0; pushLoreWithMarker("Clouds gather. Mundo drinks.", 'rain');}}
-        if (lower === 'sun')  { w2.meta.rainMeter = clamp((w2.meta.rainMeter||0)-0.07,0,1); }
-        if (lower === 'flood') { if (Math.random()<0.2+weights.floodIntensity*0.3) { doFlood(w2); pushLoreWithMarker('Rivers swell their banks.', 'flood'); } }
-
-        setWorld({...w2});
-      }
-
-      function pushLore(text) { setLore(L => [{ id: Math.random(), ts: Date.now(), text }, ...L].slice(0, 300)); }
-      function pushLoreWithMarker(text, tag, w) { (w||world).meta.eventsLog.push({ ts: Date.now(), tag, text }); pushLore(text); }
-
-      // ================== UI Handlers ==================
-      function nudge(dx, dy) { setView(v => ({ ...v, x: clamp(v.x+dx, 0, WORLD_W-v.w), y: clamp(v.y+dy, 0, WORLD_H-v.h) })); }
-      function zoom(delta) { setView(v => { const z = clamp(v.zoom+delta, 0.6, 2.5); const scale = Math.round(START_SCALE*z); return { ...v, zoom:z, scale }; }); }
-
-      // Hover for coords + village name
-      useEffect(() => {
-        const el = canvasRef.current; if (!el) return;
-        function onMove(e){ const r=el.getBoundingClientRect(); const tx=Math.floor((e.clientX-r.left)/view.scale); const ty=Math.floor((e.clientY-r.top)/view.scale); const gx=clamp(view.x+tx,0,WORLD_W-1); const gy=clamp(view.y+ty,0,WORLD_H-1); const idx = gy*WORLD_W+gx; const name = world.villages[idx] || ""; hoverRef.current={x:gx,y:gy,name}; }
-        function onLeave(){ hoverRef.current={x:-1,y:-1,name:""}; }
-        el.addEventListener('mousemove',onMove); el.addEventListener('mouseleave',onLeave);
-        return ()=>{ el.removeEventListener('mousemove',onMove); el.removeEventListener('mouseleave',onLeave); };
-      }, [view, world]);
-
-      const [tooltip, setTooltip] = useState("");
-      useEffect(()=>{ const iv=setInterval(()=>{ const h=hoverRef.current; if (h.x>=0){ const x1=h.x+1; const yBL=WORLD_H-h.y; const village=h.name?` • Village: ${h.name}`:""; setTooltip(`(${x1},${yBL})${village}`);} else setTooltip(""); },120); return ()=>clearInterval(iv); },[]);
-
-      // Input send
-      function send() { if (!input.trim()) return; ingestChat({name:"You",__uid:stableLocalUser()}, input.trim(), true); setInput(""); }
-
-      return (
-        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-3">
-          {/* World column */}
-          <div className="lg:col-span-2">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-lg font-semibold">Mundo</div>
-              <div className="flex items-center gap-3 text-xs text-slate-400">
-                <div>Seed: <code className="text-emerald-300">{seed.slice(0,6)}</code></div>
-                <div className="hidden sm:flex items-center gap-1">
-                  <button onClick={()=>zoom(-0.1)} className="rounded bg-slate-800 px-2 py-0.5">−</button>
-                  <button onClick={()=>zoom(+0.1)} className="rounded bg-slate-800 px-2 py-0.5">+</button>
-                  <button onClick={()=>nudge(-20,0)} className="rounded bg-slate-800 px-2 py-0.5">◀</button>
-                  <button onClick={()=>nudge(20,0)} className="rounded bg-slate-800 px-2 py-0.5">▶</button>
-                  <button onClick={()=>nudge(0,-20)} className="rounded bg-slate-800 px-2 py-0.5">▲</button>
-                  <button onClick={()=>nudge(0,20)} className="rounded bg-slate-800 px-2 py-0.5">▼</button>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span>WS:</span>
-                  <input value={wsUrl} onChange={(e)=>setWsUrl(e.target.value)} placeholder="wss://host" className="rounded bg-slate-900 px-2 py-0.5 text-xs ring-1 ring-slate-700 w-40" />
-                </div>
-              </div>
-            </div>
-            <div className="overflow-hidden rounded-2xl border border-slate-800 shadow-inner shadow-black/20 relative">
-              <canvas ref={canvasRef} width={view.w*view.scale} height={view.h*view.scale} className="block w-full bg-slate-900" />
-              {tooltip && (<div className="pointer-events-none absolute bottom-2 right-2 rounded bg-black/60 px-2 py-1 text-xs text-slate-200">{tooltip}</div>)}
-            </div>
-            <Legend />
-          </div>
-
-          {/* Right column */}
-          <div className="flex min-h-[560px] flex-col gap-3">
-            {/* Chat */}
-            <div className="rounded-2xl border border-slate-800">
-              <div className="flex items-center justify-between border-b border-slate-800 p-2">
-                <div className="text-lg font-semibold">Chat</div>
-                <div className="text-xs text-slate-400">Try: wheat, trees, rain, sun, flood, found Riverton, donate food 3</div>
-              </div>
-              <div className="h-72 overflow-y-auto p-3 text-sm">
-                {messages.map(m => (
-                  <div key={m.id} className="mb-1">
-                    <span className="text-emerald-300">{m.user?.name || m.user}</span>
-                    <span className="mx-2 text-slate-500">•</span>
-                    <span className="text-slate-200">{m.text}</span>
-                  </div>
-                ))}
-                {messages.length===0 && (<div className="text-slate-500">No messages yet. Be the first to guide Mundo.</div>)}
-              </div>
-              <div className="flex items-center gap-2 border-t border-slate-800 p-2">
-                <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter') send(); }} placeholder="Type a word… (/admin to open Director Console)" className="flex-1 rounded-xl bg-slate-900 px-3 py-2 text-sm outline-none ring-1 ring-slate-700 placeholder:text-slate-500 focus:ring-emerald-500" />
-                <button onClick={send} className="rounded-xl bg-emerald-500 px-3 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-400">Send</button>
-              </div>
-            </div>
-
-            {/* Lore */}
-            <div className="rounded-2xl border border-slate-800">
-              <div className="flex items-center justify-between border-b border-slate-800 p-2">
-                <div className="text-sm font-semibold">Lore feed</div>
-                <button onClick={()=>setSeed(Math.random().toString(36).slice(2))} className="text-xs text-slate-400 underline decoration-dotted underline-offset-2">reseed world</button>
-              </div>
-              <div className="h-56 overflow-y-auto p-3 text-sm">
-                {lore.map(l => (
-                  <div key={l.id} className="mb-2">
-                    <div className="text-slate-300">{l.text}</div>
-                    <div className="text-[10px] text-slate-500">{new Date(l.ts).toLocaleTimeString()}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Director Console */}
-            {showAdmin && (
-              <div className="rounded-2xl border border-slate-800">
-                <DirectorConsole
-                  weights={weights}
-                  setWeights={setWeights}
-                  radarCfg={radarCfg}
-                  setRadarCfg={setRadarCfg}
-                  villagesRef={villagesRef}
-                />
-
-                {/* Signal Radar */}
-                <div className="border-t border-slate-800 p-2 text-sm font-semibold">Signal Radar (last {radarCfg.winMin}m)</div>
-                <div className="p-2">
-                  <canvas ref={radarCanvasRef} width={520} height={180} className="w-full rounded bg-slate-900 ring-1 ring-slate-800" />
-                </div>
-
-                {/* Admin Chat */}
-                <AdminChat onCommand={(cmd)=>handleAdminCommand(cmd)} />
-              </div>
-            )}
-          </div>
-        </div>
-      );
-
-      function handleAdminCommand(txt){ if(!txt.trim()) return; if(txt.trim()==='/admin'){ setShowAdmin(s=>!s); return; } ingestChat({name:'ADMIN',__uid:'ADMIN'}, txt, true,'ADMIN'); }
-
-      function pushVillageListUpdate(){ /* future: could trigger re-render via state if we want a dedicated panel */ }
-
-      function ensureVillageRecords(vref, idx, name){ vref.byIndex[idx]=name; if(!vref.byName[name]) vref.byName[name]={ i:idx, food:0, wood:0, contributors:new Map(), founders:new Set() }; world.villages[idx]=name; }
-
-      function donateToVillage(vref, kind, amt, targetName, uid, uname){
-        let target = targetName && vref.byName[targetName];
-        if(!target){ // default to any existing
-          const any = Object.values(vref.byName)[0]; if(!any){ pushLore("No village to donate to yet."); return; } target = any; }
-        target[kind] = (target[kind]||0)+amt; const prev = target.contributors.get(uid)||0; target.contributors.set(uid, prev+amt);
-        if(kind==='food' && target.food>=25) { pushLoreWithMarker(`${targetName||'A village'} prepares a festival feast!`, 'festival'); applyFestival(world, target.i); }
-      }
-    }
-
-    /****************
-     * UI widgets   *
-     ****************/
-    function Legend(){
-      const used=[TILE.GRASS,TILE.WATER,TILE.WHEAT,TILE.SAND,TILE.TREES,TILE.GOLD,TILE.MOUNTAIN,TILE.VILLAGE,TILE.WITCH];
-      return (
-        <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-400 md:grid-cols-4">
-          {used.map(id => <LegendItem key={id} color={tileDefs[id].hex} label={tileDefs[id].name} />)}
-        </div>
-      );
-    }
-    function LegendItem({color,label}){ return (<div className="flex items-center gap-2"><div className="h-3 w-3 rounded" style={{backgroundColor:color}}></div><div>{label}</div></div>); }
-
-    function DirectorConsole({weights,setWeights,radarCfg,setRadarCfg,villagesRef}){
-      const [showTreasury,setShowTreasury]=useState(true);
-      const villages = Object.entries(villagesRef.current.byName);
-      return (
-        <div className="rounded-2xl border-b border-slate-800">
-          <div className="grid grid-cols-1 gap-4 p-3 md:grid-cols-2">
-            <div>
-              <div className="text-sm font-semibold mb-2">World Weights</div>
-              <Slider label="Rain bias" min={-1} max={1} step={0.01} value={weights.rainBias} onChange={v=>setWeights(w=>({...w,rainBias:v}))}/>
-              <Slider label="Flood intensity" min={0} max={1} step={0.01} value={weights.floodIntensity} onChange={v=>setWeights(w=>({...w,floodIntensity:v}))}/>
-              <Slider label="Spawn boost" min={-1} max={1} step={0.01} value={weights.spawnBoost} onChange={v=>setWeights(w=>({...w,spawnBoost:v}))}/>
-              <Slider label="Chaos" min={0} max={1} step={0.01} value={weights.chaos} onChange={v=>setWeights(w=>({...w,chaos:v}))}/>
-              <Slider label="Quicksand sensitivity" min={0.1} max={0.8} step={0.01} value={weights.quicksandSensitivity} onChange={v=>setWeights(w=>({...w,quicksandSensitivity:v}))}/>
-              <Slider label="GAM: Actions/min" min={0} max={60} step={1} value={weights.gam} onChange={v=>setWeights(w=>({...w,gam:v}))}/>
-              <Slider label="Lore Mix (Echo ↔ Vibe)" min={0} max={1} step={0.05} value={weights.loreMix} onChange={v=>setWeights(w=>({...w,loreMix:v}))}/>
-              <div className="mt-2 flex items-center gap-2 text-xs">
-                <label className="inline-flex items-center gap-1"><input type="checkbox" checked={weights.eventsEnabled} onChange={e=>setWeights(w=>({...w,eventsEnabled:e.target.checked}))}/> Events enabled</label>
-                <div className="flex-1"></div>
-                <span className="mr-1">Event rate</span>
-                <input type="range" min={0.2} max={2} step={0.1} value={weights.eventRate} onChange={e=>setWeights(w=>({...w,eventRate:parseFloat(e.target.value)}))} />
-                <span className="tabular-nums w-10 text-right">{weights.eventRate.toFixed(1)}×</span>
-              </div>
-            </div>
-
-            <div>
-              <div className="text-sm font-semibold mb-2">Radar Config</div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <label>Window (min)
-                  <select className="w-full rounded bg-slate-900 ring-1 ring-slate-700 p-1" value={radarCfg.winMin} onChange={e=>{ const v=parseInt(e.target.value); setRadarCfg(rc=>({...rc,winMin:v})); }}>
-                    <option value={2}>2</option>
-                    <option value={5}>5</option>
-                    <option value={10}>10</option>
-                  </select>
-                </label>
-                <label>Top-K series
-                  <input type="number" min={3} max={10} value={radarCfg.topK} onChange={e=>setRadarCfg(rc=>({...rc,topK:clamp(parseInt(e.target.value)||5,3,10)}))} className="w-full rounded bg-slate-900 ring-1 ring-slate-700 p-1" />
-                </label>
-                <label className="col-span-2 flex items-center gap-2"><input type="checkbox" checked={radarCfg.showChatter} onChange={e=>setRadarCfg(rc=>({...rc,showChatter:e.target.checked}))}/> Show chatter</label>
-                <label className="col-span-2">Vocabulary (comma-separated)
-                  <textarea value={radarCfg.vocab} onChange={e=>{ setRadarCfg(rc=>({...rc,vocab:e.target.value})); }} className="w-full h-20 rounded bg-slate-900 ring-1 ring-slate-700 p-2" />
-                </label>
-              </div>
-
-              <div className="mt-3 border-t border-slate-800 pt-2">
-                <button onClick={()=>alert('Reseed via Lore panel above.')} className="text-xs rounded bg-slate-800 px-2 py-1">How to reseed?</button>
-              </div>
-            </div>
-          </div>
-
-          {/* Treasury panel */}
-          <div className="border-t border-slate-800 px-3 py-2">
-            <div className="flex items-center justify-between text-sm font-semibold">
-              <span>Village Treasuries</span>
-              <button className="text-xs text-slate-400 underline decoration-dotted" onClick={()=>setShowTreasury(s=>!s)}>{showTreasury? 'hide':'show'}</button>
-            </div>
-            {showTreasury && (
-              <div className="mt-2 grid grid-cols-1 gap-2">
-                {Object.entries(villagesRef.current.byName).length===0 && (
-                  <div className="text-xs text-slate-500">No villages yet. Use <code>found Riverton</code> (10 unique users) or let civilians act.</div>
-                )}
-                {Object.entries(villagesRef.current.byName).map(([name,info])=> (
-                  <div key={name} className="flex items-center justify-between rounded bg-slate-900 p-2 ring-1 ring-slate-800 text-xs">
-                    <div className="font-semibold text-slate-200">{name}</div>
-                    <div className="flex items-center gap-4">
-                      <div>Food: <span className="tabular-nums text-emerald-300">{info.food||0}</span></div>
-                      <div>Wood: <span className="tabular-nums text-amber-300">{info.wood||0}</span></div>
-                      <div className="text-slate-500">Top contributors: {topContribList(info.contributors)}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      );
-    }
-
-    function AdminChat({onCommand}){
-      const [val,setVal]=useState("");
-      return (
-        <div className="border-t border-slate-800">
-          <div className="p-2 text-sm font-semibold">Admin Chat</div>
-          <div className="flex items-center gap-2 p-2">
-            <input value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter'){ onCommand(val); setVal(''); } }} placeholder="Type command (e.g., found Riverton, donate food 3 Riverton, volcano)" className="flex-1 rounded-xl bg-slate-900 px-3 py-2 text-sm outline-none ring-1 ring-slate-700 placeholder:text-slate-500 focus:ring-fuchsia-400" />
-            <button onClick={()=>{ onCommand(val); setVal(''); }} className="rounded-xl bg-fuchsia-500 px-3 py-2 text-sm font-semibold text-fuchsia-950 hover:bg-fuchsia-400">Run</button>
-          </div>
-        </div>
-      );
-    }
-
-    function Slider({label,value,onChange,min=0,max=1,step=0.01}){
-      return (
-        <div className="mb-2">
-          <div className="mb-1 flex items-center justify-between text-xs">
-            <div>{label}</div>
-            <div className="tabular-nums text-slate-300">{typeof value==='number'? value.toFixed(step<1?2:0): value}</div>
-          </div>
-          <input type="range" min={min} max={max} step={step} value={value} onChange={e=>onChange(parseFloat(e.target.value))} className="w-full accent-emerald-400" />
-        </div>
-      );
-    }
-
-    function topContribList(map){ if(!map||map.size===0) return <span className="text-slate-600">—</span>; const arr=[...map.entries()].sort((a,b)=>b[1]-a[1]).slice(0,3); return <span>{arr.map(([uid,amt])=> `${shortId(uid)}:${amt}`).join(', ')}</span>; }
-    function shortId(id){ return (id||'').toString().slice(0,6); }
-
-    /********************
-     * World generation *
-     ********************/
-    function makeInitialWorld(rnd){
-      const grid=new Uint8Array(WORLD_W*WORLD_H);
-      const height=new Float32Array(WORLD_W*WORLD_H);
-      const moisture=new Float32Array(WORLD_W*WORLD_H);
-      const idx=(x,y)=>y*WORLD_W+x;
-
-      function blobs(kind,count,steps,spread){
-        for(let b=0;b<count;b++){
-          let x=(rnd()*WORLD_W)|0, y=(rnd()*WORLD_H)|0;
-          for(let s=0;s<steps;s++){
-            const r=(rnd()*spread)|0;
-            for(let i=0;i<r;i++){
-              const xx=clamp(x+((rnd()<0.5?-1:1)*((rnd()*2)|0)),0,WORLD_W-1);
-              const yy=clamp(y+((rnd()<0.5?-1:1)*((rnd()*2)|0)),0,WORLD_H-1);
-              grid[idx(xx,yy)]=kind;
-            }
-            x=clamp(x+(rnd()<0.5?-1:1),0,WORLD_W-1);
-            y=clamp(y+(rnd()<0.5?-1:1),0,WORLD_H-1);
-          }
-        }
-      }
-
-      grid.fill(TILE.GRASS);
-      blobs(TILE.WATER, 25, 900, 18);
-      blobs(TILE.SAND, 18, 700, 14);
-      blobs(TILE.MOUNTAIN, 30, 1200, 20);
-      blobs(TILE.TREES, 40, 600, 16);
-
-      for(let y=0;y<WORLD_H;y++){
-        for(let x=0;x<WORLD_W;x++){
-          const id=idx(x,y); const t=grid[id];
-          let h=0.5+(Math.random()-0.5)*0.1; if(t===TILE.MOUNTAIN) h+=0.25; if(t===TILE.WATER) h-=0.2;
-          let m=0.4+(Math.random()-0.5)*0.1 + (t===TILE.WATER?0.35:0); if(t===TILE.SAND) m-=0.15; if(t===TILE.MOUNTAIN) m-=0.05;
-          height[id]=clamp(h,0,1); moisture[id]=clamp(m,0,1);
-        }
-      }
-
-      // rare gold near mountains
-      let goldPlaced=0; for(let tries=0; tries<50000 && goldPlaced<800; tries++){ const x=(Math.random()*WORLD_W)|0, y=(Math.random()*WORLD_H)|0; const i=idx(x,y); if(grid[i]===TILE.MOUNTAIN && Math.random()<0.02){ grid[i]=TILE.GOLD; goldPlaced++; } }
-
-      return { grid, height, moisture, meta:{ rainMeter:0, eventsLog:[] }, villages:{} };
-    }
-
-    function worldCount(world, kind){ const {grid}=world; let n=0; for(let i=0;i<grid.length;i++) if(grid[i]===kind) n++; return n; }
-
-    /****************
-     * Tick & FX    *
-     ****************/
-    function neighbors(x,y){ const out=[]; for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){ if(dx===0&&dy===0) continue; const xx=x+dx, yy=y+dy; if(xx>=0&&yy>=0&&xx<WORLD_W&&yy<WORLD_H) out.push({x:xx,y:yy}); } return out; }
-
-    function tickWorldSampled(world, rnd, weights){
-      const {grid,moisture}=world; const N=grid.length;
-      for(let k=0;k<SIM_SAMPLE_PER_TICK;k++){
-        const i=(Math.random()*N)|0; const t=grid[i];
-        if(t===TILE.WATER) moisture[i]=clamp(moisture[i]+0.0008,0,1); else moisture[i]=clamp(moisture[i]-0.0004,0,1);
-        if(t===TILE.WHEAT){ if(moisture[i]<0.22 && Math.random()<0.0008) grid[i]=TILE.GRASS; if(moisture[i]>0.7 && Math.random()<0.001) spreadCropAtIndex(world,i, TILE.WHEAT, weights); }
-        if(t===TILE.GRASS && moisture[i]<0.15 && Math.random()<0.0005) grid[i]=TILE.SAND;
-        if(t===TILE.TREES){ if(moisture[i]<0.2 && Math.random()<0.0005) grid[i]=TILE.SAND; }
-      }
-      return world;
-    }
-
-    function spawnTile(world, kind, rnd, weights){ const {grid,moisture}=world; const N=grid.length; for(let tries=0; tries<200; tries++){ const i=(Math.random()*N)|0; if(grid[i]===TILE.GRASS && moisture[i]>0.28 && Math.random()<0.55 + (weights.spawnBoost*0.25)){ grid[i]=kind; return true; } } return false; }
-
-    function spreadCropAtIndex(world, i, kind, weights){ const {grid}=world; const x=i%WORLD_W, y=(i/WORLD_W)|0; const nbs=neighbors(x,y); const nb=nbs[(Math.random()*nbs.length)|0]; const j=nb.y*WORLD_W+nb.x; if(grid[j]===TILE.GRASS && Math.random()<0.5 + weights.spawnBoost*0.2) grid[j]=kind; }
-
-    function doRain(world){ const {moisture,grid}=world; for(let k=0;k<SIM_SAMPLE_PER_TICK*5;k++){ const i=(Math.random()*grid.length)|0; moisture[i]=clamp(moisture[i]+0.12 + (Math.random()-0.5)*0.02,0,1); if(grid[i]===TILE.GRASS && moisture[i]>0.75 && Math.random()<0.003) grid[i]=TILE.WHEAT; } }
-
-    function doFlood(world){ const {grid,moisture}=world; const floodChance=0.006; for(let k=0;k<SIM_SAMPLE_PER_TICK*4;k++){ const i=(Math.random()*grid.length)|0; if(grid[i]===TILE.WATER){ const x=i%WORLD_W, y=(i/WORLD_W)|0; const nbs=neighbors(x,y); const nb=nbs[(Math.random()*nbs.length)|0]; const j=nb.y*WORLD_W+nb.x; if(grid[j]!==TILE.WATER && Math.random()<floodChance) grid[j]=TILE.WATER; } if(grid[i]!==TILE.WATER) moisture[i]=clamp(moisture[i]+0.03,0,1); } }
-
-    function applyFestival(world, idx){ // simple local growth buff
-      const cx=idx%WORLD_W, cy=(idx/WORLD_W)|0;
-      for(let y=Math.max(0,cy-12); y<Math.min(WORLD_H,cy+12); y++){
-        for(let x=Math.max(0,cx-12); x<Math.min(WORLD_W,cx+12); x++){
-          const j=y*WORLD_W+x; if(world.grid[j]===TILE.GRASS && Math.random()<0.02) world.grid[j]=TILE.WHEAT;
+          x=clamp(x+(rnd()<0.5?-1:1),0,WORLD_W-1);
+          y=clamp(y+(rnd()<0.5?-1:1),0,WORLD_H-1);
         }
       }
     }
-
-    function placeVillage(world, name, rnd){ const {grid}=world; const N=grid.length; for(let tries=0; tries<4000; tries++){ const i=(Math.random()*N)|0; if(grid[i]!==TILE.GRASS) continue; if(Math.random()<0.7){ grid[i]=TILE.VILLAGE; world.villages[i]=name; return i; } } return null; }
-
-    /****************
-     * Citizens     *
-     ****************/
-    function makeCitizens(){
-      const out=[]; let idx=0;
-      for(let c of COLORS){ for(let n of NOUNS){ const id=`${c}-${n}-${(Math.random()*1e9|0).toString(36)}`; out.push({ id, name:`${c} ${n}`, vibe: VIBES[idx%VIBES.length], food:0, wood:0 }); idx++; } }
-      return out; // length 100
-    }
-
-    function poisson(lambda){ // Knuth for small lambda
-      let L=Math.exp(-lambda), k=0, p=1; do{ k++; p*=Math.random(); } while(p>L); return k-1;
-    }
-
-    function simCitizenAct(c, world, vref, prefs, weights, topics, radar, ingestChat, pushLore){
-      // Decide action type based on mix
-      const r=Math.random();
-      if(r<0.40){ // talk / flavor (mix Echo/Vibe handled by lore engine; here we just chat)
-        const line = randomCitizenLine(c);
-        ingestChat({name:c.name,__uid:c.id}, line, true, c.id);
-        return;
-      } else if(r<0.65){ // harvest wheat => +food
-        if(Math.random()<0.55){ c.food += 1 + (Math.random()<0.10?1:0); }
-        ingestChat({name:c.name,__uid:c.id}, 'wheat', true, c.id);
-        return;
-      } else if(r<0.90){ // gather wood
-        if(Math.random()<0.55){ c.wood += 1 + (Math.random()<0.05?1:0); }
-        ingestChat({name:c.name,__uid:c.id}, 'trees', true, c.id);
-        return;
-      } else if(r<0.95){ // found village attempt
-        const vname = sampleVillageName();
-        ingestChat({name:c.name,__uid:c.id}, `found ${vname}` , true, c.id);
-        return;
-      } else { // donate if have >=3
-        const donateKind = (c.food>=3 && c.wood>=3) ? (Math.random()<0.5?'food':'wood') : (c.food>=3?'food':(c.wood>=3?'wood':null));
-        if(!donateKind){ // fallback to flavor
-          ingestChat({name:c.name,__uid:c.id}, randomCitizenLine(c), true, c.id); return; }
-        const amt = 1 + (Math.random()*3|0);
-        const targetName = pickFavoredVillageName(vref) || '';
-        if(donateKind==='food') c.food = Math.max(0, c.food-amt); else c.wood = Math.max(0, c.wood-amt);
-        ingestChat({name:c.name,__uid:c.id}, `donate ${donateKind} ${amt} ${targetName?('to '+targetName):''}`, true, c.id);
-        return;
+    blobs(TILE.WATER,25,900,18);
+    blobs(TILE.SAND,18,700,14);
+    blobs(TILE.MOUNTAIN,30,1200,20);
+    blobs(TILE.TREES,40,600,16);
+    // height & moisture
+    for(let y=0;y<WORLD_H;y++){
+      for(let x=0;x<WORLD_W;x++){
+        const id=idx(x,y), t=grid[id];
+        let h=0.5+(Math.random()-0.5)*0.1;
+        if(t===TILE.MOUNTAIN) h+=0.25;
+        if(t===TILE.WATER) h-=0.2;
+        let m=0.4+(Math.random()-0.5)*0.1+(t===TILE.WATER?0.35:0);
+        if(t===TILE.SAND) m-=0.15;
+        if(t===TILE.MOUNTAIN) m-=0.05;
+        height[id]=clamp(h,0,1);
+        moisture[id]=clamp(m,0,1);
       }
     }
-
-    function sampleVillageName(){ const pool=['Riverton','Evermere','Stonefield','Alderwick','Mossford','Sunhollow','Glitterfen','Northwatch','Brookfall','Kestrel']; return pool[(Math.random()*pool.length)|0]; }
-    function pickFavoredVillageName(vref){ const names=Object.keys(vref.byName); if(names.length===0) return null; return names[(Math.random()*names.length)|0]; }
-
-    function randomCitizenLine(c){
-      const wholesome=["The fields look patient today.","I’ve never seen a volcano before, but I’d sure love to.","Rain soon? My wheat hopes so.","Passing travelers say the river sings."];
-      const snarky=["Quicksand discourse again? Bold.","If I say ‘sun’ enough will it listen?","Volcano when? Asking for a friend.","Gold?? In this economy?"];
-      const slapstick=["Slipped in mud, 10/10 would slip again.","I saw a fish. It saw me. We nodded.","I brought a bucket. For reasons.","If I shout ‘flood’ do I get a boat?"];
-      const bank = c.vibe==='wholesome'?wholesome: c.vibe==='snarky'?snarky:slapstick;
-      return bank[(Math.random()*bank.length)|0];
+    // rare gold veins in mountains
+    let placed=0;
+    for(let tries=0;tries<50000 && placed<800;tries++){
+      const x=(Math.random()*WORLD_W)|0, y=(Math.random()*WORLD_H)|0, id=y*WORLD_W+x;
+      if(grid[id]===TILE.MOUNTAIN && Math.random()<0.02){ grid[id]=TILE.GOLD; placed++; }
     }
+    return {grid,height,moisture,meta:{rainMeter:0},villages:{},villagesByName:{}};
+  }
 
-    /****************
-     * Events + Lore*
-     ****************/
-    function runEvents(world, setWorld, rnd, weights, vref, lore){
-      const r=Math.random();
-      // Ambient: rain
-      if(r<0.25){ if(world.meta.rainMeter>0.65){ doRain(world); lore('Soft rain patters across the fields.','rain'); world.meta.rainMeter=0; } }
-      // Reactive: vein glimmer (keyword pressure handled by radar/topics; here random small chance)
-      if(r<0.30){ if(Math.random()<0.15){ lore('Miners swear a dull shine deep in the hills.','gold'); }}
-      // Crisis: river swell
-      if(r<0.36){ if(worldCount(world,TILE.WATER)>40000 && Math.random()<0.25){ doFlood(world); lore('Riverbanks darken; the lowlands brace.','flood'); }}
-      // Crisis: forest fire (gentle)
-      if(r<0.42){ const trees = worldCount(world,TILE.TREES); if(trees>8000 && Math.random()<0.15) { smallForestFire(world); lore('Smoke threads the canopy; a small fire flickers out.','fire'); }}
-      setWorld({...world});
+  function tickWorldSampled(world,rnd,weights){
+    const {grid,moisture}=world;
+    const N=grid.length;
+    for(let k=0;k<SAMPLE_PER_TICK;k++){
+      const i=(Math.random()*N)|0;
+      const t=grid[i];
+      if(t===TILE.WATER) moisture[i]=clamp(moisture[i]+0.0008,0,1);
+      else moisture[i]=clamp(moisture[i]-0.0004,0,1);
+      // wheat dynamics
+      if(t===TILE.WHEAT){
+        if(moisture[i]<0.22 && Math.random()<0.0008) grid[i]=TILE.GRASS;
+        if(moisture[i]>0.7 && Math.random()<0.001) spreadWheatAtIndex(world,i,rnd,weights);
+      }
+      // desertify
+      if(t===TILE.GRASS && moisture[i]<0.15 && Math.random()<0.0005) grid[i]=TILE.SAND;
     }
+    return world;
+  }
 
-    function smallForestFire(world){ const {grid}=world; const N=grid.length; for(let k=0;k<5000;k++){ const i=(Math.random()*N)|0; if(grid[i]===TILE.TREES && Math.random()<0.02) grid[i]=TILE.SAND; }
-    }
-
-    function makeLoreBeat(world, weights, radar, topics){
-      // mix echo vs vibe via weights.loreMix
-      const vibeLine = randomOne([
-        "Farmers reckon the soil keeps its counsel.",
-        "Children trade rumors of lights beyond the hills.",
-        "The wind scribbles on the water; no one can read it.",
-        "Old stones feel warm as if remembering summer."
-      ], Math.random);
-
-      const echoTop = topRadarWords(radar, 3).join(', ');
-      const echoLine = echoTop? `The talk turns to ${echoTop}.` : null;
-      const t = Math.random();
-      if(t < weights.loreMix && echoLine) return echoLine; else return vibeLine;
-    }
-
-    // Topic tracker: accumulate scores with decay; schedule arcs
-    function updateTopics(state, text, uid){
-      const words = text.toLowerCase().match(/[a-z]{3,}/g) || [];
-      const now = Date.now();
-      // decay
-      for(const [k,v] of state.scores.entries()){ state.scores.set(k, v*0.985); }
-      for(const w of words){ if(!TOPIC_ALLOW.has(w)) continue; const cur = state.scores.get(w)||0; const uMap = state.users.get(w)||new Set(); uMap.add(uid); state.users.set(w,uMap); state.scores.set(w, cur + 5); }
-      // schedule
-      for(const [k,score] of state.scores.entries()){
-        const uniques = (state.users.get(k)||new Set()).size;
-        if(score>300 && uniques>=40 && !state.scheduled.find(e=>e.kind===k)){
-          // schedule 2–3 days from now
-          const when = Date.now() + (1000*60*60*24*(2 + Math.random()));
-          state.scheduled.push({ kind:k, at:when, stage:0 });
-        }
+  function spawnTile(world,kind,rnd,weights){
+    const {grid,moisture}=world; const N=grid.length;
+    for(let tries=0;tries<200;tries++){
+      const i=(Math.random()*N)|0;
+      if(grid[i]===TILE.GRASS && moisture[i]>0.28 && Math.random()<0.55+(weights.spawnBoost*0.25)){
+        grid[i]=kind; return true;
       }
     }
+    return false;
+  }
 
-    function runTopicArcs(world, setWorld, rnd, state, lore){
-      const now = Date.now();
-      for(const [k,score] of state.scores.entries()){
-        const uniques = (state.users.get(k)||new Set()).size;
-        if(score>50 && !state._whisper?.has?.(k)){ state._whisper = state._whisper||new Set(); if(!state._whisper.has(k)){ state._whisper.add(k); lore(`A whisper of ${k} moves through the crowd.`, k); } }
-        if(score>100 && !state._murmur?.has?.(k)){ state._murmur = state._murmur||new Set(); if(!state._murmur.has(k)){ state._murmur.add(k); lore(`Some claim to see signs of ${k}.`, k); } }
-        if(score>200 && uniques>=25 && !state._omen?.has?.(k)){ state._omen = state._omen||new Set(); if(!state._omen.has(k)){ state._omen.add(k); lore(`Omens point toward ${k}.`, k); } }
+  function spreadWheatAtIndex(world,i,rnd,weights){
+    const {grid}=world;
+    const x=i%WORLD_W, y=(i/WORLD_W)|0;
+    const nbs=neighbors(x,y);
+    const nb=nbs[(Math.random()*nbs.length)|0];
+    const j=nb.y*WORLD_W+nb.x;
+    if(grid[j]===TILE.GRASS && Math.random()<0.5+weights.spawnBoost*0.2) grid[j]=TILE.WHEAT;
+  }
+
+  function neighbors(x,y){
+    const out=[];
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+      if(dx===0 && dy===0) continue;
+      const xx=x+dx, yy=y+dy;
+      if(xx>=0 && yy>=0 && xx<WORLD_W && yy<WORLD_H) out.push({x:xx,y:yy});
+    }
+    return out;
+  }
+
+  function doRain(world,rnd,weights){
+    const {moisture,grid}=world;
+    for(let k=0;k<SAMPLE_PER_TICK*5;k++){
+      const i=(Math.random()*grid.length)|0;
+      moisture[i]=clamp(moisture[i]+0.12+weights.chaos*(Math.random()-0.5)*0.05,0,1);
+      if(grid[i]===TILE.GRASS && moisture[i]>0.75 && Math.random()<0.003) grid[i]=TILE.WHEAT;
+    }
+  }
+
+  function doFlood(world,rnd,weights){
+    const {grid,moisture}=world;
+    const chance=0.006+weights.floodIntensity*0.02;
+    for(let k=0;k<SAMPLE_PER_TICK*4;k++){
+      const i=(Math.random()*grid.length)|0;
+      if(grid[i]===TILE.WATER){
+        const x=i%WORLD_W,y=(i/WORLD_W)|0;
+        const nbs=neighbors(x,y);
+        const nb=nbs[(Math.random()*nbs.length)|0];
+        const j=nb.y*WORLD_W+nb.x;
+        if(grid[j]!==TILE.WATER && Math.random()<chance) grid[j]=TILE.WATER;
       }
-      for(const ev of state.scheduled){ if(!ev._announced && now>ev.at - 1000*60*60*24){ ev._announced=true; lore(`The air smells different. In the days ahead, ${ev.kind} may come.`, ev.kind); } }
-      for(const ev of state.scheduled){ if(!ev._done && now>ev.at){ ev._done=true; if(ev.kind==='volcano'){ lore('The mountain belches smoke; ash kisses the dawn.', 'volcano'); } else { lore(`Fate tilts: ${ev.kind} arrives.`, ev.kind); } } }
+      if(grid[i]!==TILE.WATER) moisture[i]=clamp(moisture[i]+0.03,0,1);
     }
+  }
 
-    /****************
-     * Radar        *
-     ****************/
-    function getVocabArray(vstr){ return (vstr||'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean); }
-
-    function makeRadar(winMin, binMs, vocab){
-      const bins = Math.max(1, Math.round((winMin*60*1000)/binMs));
-      const series = new Map();
-      for(const k of vocab) series.set(k, new Array(bins).fill(0));
-      const chatter = new Array(bins).fill(0);
-      return { binMs, bins, head:0, lastTs:Date.now(), series, chatter, vocab:new Set(vocab) };
+  function summonWitchCircle(world,rnd){
+    const {grid,moisture}=world; let cx=0,cy=0,best=-1;
+    for(let tries=0;tries<2000;tries++){
+      const x=(Math.random()*WORLD_W)|0,y=(Math.random()*WORLD_H)|0;
+      const m=moisture[y*WORLD_W+x];
+      if(m>best){best=m;cx=x;cy=y;}
     }
-
-    function updateRadar(radar, text){
-      const now = Date.now(); const steps = Math.floor((now - radar.lastTs)/radar.binMs);
-      if(steps>0){ radar.lastTs = radar.lastTs + steps*radar.binMs; radar.head = (radar.head + steps) % radar.bins; for(const arr of radar.series.values()) for(let s=0;s<steps;s++){ arr[(radar.head+s)%radar.bins]=0; } for(let s=0;s<steps;s++){ radar.chatter[(radar.head+s)%radar.bins]=0; } }
-      const words = (text.toLowerCase().match(/[a-z]{3,}/g) || []);
-      let matched = false;
-      for(const w of words){ if(radar.vocab.has(w)){ const arr=radar.series.get(w); arr[radar.head] = (arr[radar.head]||0)+1; matched=true; } }
-      if(!matched){ radar.chatter[radar.head] = (radar.chatter[radar.head]||0)+1; }
-    }
-
-    function topRadarWords(radar, k){
-      const sums=[]; for(const [w,arr] of radar.series.entries()){ const s=arr.reduce((a,b)=>a+b,0); sums.push([w,s]); }
-      sums.sort((a,b)=>b[1]-a[1]); return sums.slice(0,k).map(x=>x[0]);
-    }
-
-    function drawRadar(canvas, radar, cfg, eventsLog){ if(!canvas||!radar) return; const ctx=canvas.getContext('2d'); const W=canvas.width, H=canvas.height; ctx.clearRect(0,0,W,H); ctx.fillStyle='#0b1020'; ctx.fillRect(0,0,W,H);
-      // axes
-      ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.beginPath(); ctx.moveTo(32,10); ctx.lineTo(32,H-20); ctx.lineTo(W-10,H-20); ctx.stroke();
-      const seriesEntries = [...radar.series.entries()].map(([k,arr])=>[k,arr.slice()]);
-      seriesEntries.sort((a,b)=> b[1].reduce((x,y)=>x+y,0) - a[1].reduce((x,y)=>x+y,0));
-      const chosen = seriesEntries.slice(0, cfg.topK);
-      const maxVal = Math.max(1, ...chosen.map(([_,arr])=> Math.max(...arr)) , (cfg.showChatter? Math.max(...radar.chatter):1));
-      const colors = ['#60a5fa','#22d3ee','#a78bfa','#34d399','#f59e0b','#f472b6','#f87171','#4ade80','#c084fc','#38bdf8'];
-      function yFor(v){ const pad=6; return (H-20) - ( (H-36) * (v/maxVal) ); }
-      function xFor(i){ const span=W-42; return 32 + (span * (i/(radar.bins-1))); }
-      // draw chatter
-      if(cfg.showChatter){ ctx.strokeStyle='rgba(148,163,184,0.5)'; ctx.beginPath(); for(let bi=0; bi<radar.bins; bi++){ const i=(radar.head+bi+1)%radar.bins; const x=xFor(bi); const y=yFor(radar.chatter[i]); if(bi===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); } ctx.stroke(); }
-      // draw series
-      chosen.forEach(([name,arr],si)=>{ ctx.strokeStyle=colors[si%colors.length]; ctx.beginPath(); for(let bi=0; bi<radar.bins; bi++){ const i=(radar.head+bi+1)%radar.bins; const x=xFor(bi); const y=yFor(arr[i]); if(bi===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); } ctx.stroke(); });
-      // legend
-      ctx.font='10px ui-sans-serif'; ctx.textBaseline='top'; let lx=36, ly=10; chosen.forEach(([name],si)=>{ ctx.fillStyle=colors[si%colors.length]; ctx.fillRect(lx,ly+2,8,8); ctx.fillStyle='#cbd5e1'; ctx.fillText(name, lx+12, ly); ly+=12; }); if(cfg.showChatter){ ctx.fillStyle='rgba(148,163,184,0.8)'; ctx.fillRect(lx,ly+2,8,8); ctx.fillStyle='#cbd5e1'; ctx.fillText('chatter', lx+12, ly); ly+=12; }
-      // event markers
-      if(eventsLog && eventsLog.length){ const now=Date.now(); const span=radar.bins*radar.binMs; for(const ev of eventsLog){ if(now-ev.ts>span) continue; const dt = now-ev.ts; const x = W-10 - ( (W-42) * (dt/span) ); const y=12; ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(x,y,2,0,Math.PI*2); ctx.fill(); }
+    const radius=8+((Math.random()*8)|0);
+    for(let y=Math.max(0,cy-radius-1);y<Math.min(WORLD_H,cy+radius+1);y++){
+      for(let x=Math.max(0,cx-radius-1);x<Math.min(WORLD_W,cx+radius+1);x++){
+        const dx=x-cx,dy=y-cy; const d=Math.sqrt(dx*dx+dy*dy);
+        if(Math.abs(d-radius)<1.2) grid[y*WORLD_W+x]=TILE.WITCH;
       }
     }
+  }
 
-    /****************
-     * Drawing      *
-     ****************/
-    function draw(canvas, world, view){ if(!canvas) return; const ctx=canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height);
-      const startX=view.x, startY=view.y; const endX=Math.min(startX+view.w, WORLD_W); const endY=Math.min(startY+view.h, WORLD_H); const scale=view.scale;
-      for(let y=startY, sy=0; y<endY; y++, sy++){ const rowOff=y*WORLD_W; for(let x=startX, sx=0; x<endX; x++, sx++){ const t=world.grid[rowOff+x]; const [r,g,b] = hexToRgb(tileDefs[t].hex); ctx.fillStyle=`rgb(${r},${g},${b})`; ctx.fillRect(sx*scale, sy*scale, scale, scale); } }
-      ctx.strokeStyle="rgba(0,0,0,0.08)"; for(let x=0; x<=view.w; x++){ ctx.beginPath(); ctx.moveTo(x*scale+0.5,0); ctx.lineTo(x*scale+0.5,view.h*scale); ctx.stroke(); } for(let y=0; y<=view.h; y++){ ctx.beginPath(); ctx.moveTo(0,y*scale+0.5); ctx.lineTo(view.w*scale,y*scale+0.5); ctx.stroke(); }
+  function sandify(world){
+    const {grid,moisture}=world;
+    for(let k=0;k<SAMPLE_PER_TICK*2;k++){
+      const i=(Math.random()*grid.length)|0;
+      if(grid[i]===TILE.GRASS && moisture[i]<0.5 && Math.random()<0.006) grid[i]=TILE.SAND;
+      if(grid[i]===TILE.WHEAT && Math.random()<0.004) grid[i]=TILE.SAND;
     }
+  }
 
-    /****************
-     * Boot         *
-     ****************/
-    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
-  </script>
-</body>
-</html>
+  function placeVillage(world,name,rnd){
+    const {grid}=world; const N=grid.length;
+    for(let tries=0;tries<2000;tries++){
+      const i=(Math.random()*N)|0;
+      if(grid[i]===TILE.GRASS && Math.random()<0.7){
+        grid[i]=TILE.VILLAGE;
+        world.villages[i]=name;
+        world.villagesByName[name]=parseInt(i);
+        setTre
+

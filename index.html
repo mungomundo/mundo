@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mundo – Interactive World</title>
+    <!-- Load TailwindCSS from the CDN. This provides the utility classes used
+         throughout the React component below. -->
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-slate-950 text-slate-100">
+    <!-- The React application mounts here. -->
+    <div id="root"></div>
+
+    <!-- Load React and ReactDOM. We use the UMD builds from unpkg so that
+         React is available as the global `React` and ReactDOM as `ReactDOM`. -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Use Babel to transform JSX directly in the browser. While this adds a
+         compilation step at runtime, it keeps the deployment simple for this
+         proof‑of‑concept. In a production environment you would precompile
+         your JSX to JavaScript. -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+      /**
+       * This file contains a trimmed‑down version of the Mundo prototype that
+       * works entirely in the browser. It relies on React 18 and TailwindCSS
+       * loaded above. A local WebSocket server can be configured via the
+       * `WS URL` field in the interface. If you do not specify a WebSocket
+       * endpoint, each visitor will control their own independent world.
+       *
+       * Note: Because this script is executed via Babel in the browser,
+       * `import` statements have been removed and everything lives in this
+       * global scope. See the original source for a modular version.
+       */
+
+      // Utility functions for randomness and clamping values.
+      function Alea(seedStr = "mundo") {
+        let s0 = mash(" "), s1 = mash(" "), s2 = mash(" ");
+        s0 -= mash(seedStr); if (s0 < 0) s0 += 1;
+        s1 -= mash(seedStr); if (s1 < 0) s1 += 1;
+        s2 -= mash(seedStr); if (s2 < 0) s2 += 1;
+        function mash(data) {
+          data = data.toString();
+          let n = 0xefc8249d;
+          for (let i = 0; i < data.length; i++) {
+            n += data.charCodeAt(i);
+            let h = 0.02519603282416938 * n;
+            n = h >>> 0; h -= n; h *= n; n = h >>> 0; h -= n; n += h * 0x100000000;
+          }
+          return (n >>> 0) * 2.3283064365386963e-10;
+        }
+        return function() {
+          const t = 2091639 * s0 + 2.3283064365386963e-10 * 0x100000000;
+          s0 = s1; s1 = s2; s2 = t - (t | 0);
+          return s2;
+        };
+      }
+      function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+      function sanitizeWord(raw) {
+        const t = raw.trim().toLowerCase();
+        return t.replace(/[^a-z\-]+/g, "");
+      }
+      function randomOne(arr, rnd) { return arr[(rnd() * arr.length) | 0]; }
+      function randomUserName(rnd) {
+        const A = ["copper","amber","violet","moss","river","quartz","ember","dust","ivy","wren"];
+        const B = ["fox","otter","sparrow","wolf","lynx","badger","marten","eel","owl","moth"];
+        return `${A[(rnd()*A.length)|0]}_${B[(rnd()*B.length)|0]}${(rnd()*99)|0}`;
+      }
+
+      // Grid dimensions and constants
+      const W = 72;  // width
+      const H = 48;  // height
+      const SCALE = 12; // pixels per tile
+      const TICK_MS = 33; // ~30fps
+      // Tile identifiers
+      const GRASS = 0;
+      const WATER = 1;
+      const WHEAT = 2;
+      const SAND = 3;
+      const WITCH = 4;
+
+      // Main React component
+      function MundoMVP() {
+        const { useEffect, useMemo, useState, useRef } = React;
+        // seed & RNG
+        const [seed, setSeed] = useState(() => Math.random().toString(36).slice(2));
+        const rnd = useMemo(() => Alea(seed), [seed]);
+        // world state
+        const [world, setWorld] = useState(() => makeInitialWorld(rnd));
+        const [messages, setMessages] = useState([]);
+        const [input, setInput] = useState("");
+        const [showAdmin, setShowAdmin] = useState(false);
+        const [lore, setLore] = useState(() => [
+          { id: 1, ts: Date.now(), text: "Mundo awakens. A hush over sunlit grass." },
+        ]);
+        const [adminMessages, setAdminMessages] = useState([]);
+        const [adminInput, setAdminInput] = useState("");
+        const [customVerbs, setCustomVerbs] = useState([]);
+        const [weights, setWeights] = useState({
+          rainBias: 0,
+          floodIntensity: 0.5,
+          spawnBoost: 0,
+          chaos: 0.0,
+          quicksandSensitivity: 0.35,
+        });
+        const [wsUrl, setWsUrl] = useState("");
+        const wsRef = useRef(null);
+        // plurality & sequence state
+        const countsRef = useRef(new Map());
+        const sequenceRef = useRef({ stage: 0, lastTs: 0 });
+        // canvas ref
+        const canvasRef = useRef(null);
+        const rafRef = useRef(null);
+
+        // Reseed: rebuild world & reset counters
+        useEffect(() => {
+          setWorld(makeInitialWorld(rnd));
+          countsRef.current = new Map();
+          pushLore(`The weave reshapes. New seed ${seed.slice(0,6)}.`);
+        }, [rnd]);
+
+        // Tick loop
+        useEffect(() => {
+          let last = performance.now();
+          let acc = 0;
+          const loop = (now) => {
+            acc += now - last; last = now;
+            while (acc >= TICK_MS) {
+              setWorld((w) => tickWorld(w, rnd, weights, countsRef.current));
+              acc -= TICK_MS;
+            }
+            draw(canvasRef.current, world);
+            rafRef.current = requestAnimationFrame(loop);
+          };
+          rafRef.current = requestAnimationFrame(loop);
+          return () => cancelAnimationFrame(rafRef.current);
+        }, [rnd, weights, world]);
+
+        // Plurality window cleanup
+        useEffect(() => {
+          const iv = setInterval(() => {
+            const now = Date.now();
+            for (const [word, arr] of countsRef.current.entries()) {
+              while (arr.length && now - arr[0] > 60000) arr.shift();
+              if (!arr.length) countsRef.current.delete(word);
+            }
+          }, 2000);
+          return () => clearInterval(iv);
+        }, []);
+
+        // WebSocket client (optional)
+        useEffect(() => {
+          if (!wsUrl) return;
+          try {
+            const ws = new WebSocket(wsUrl);
+            wsRef.current = ws;
+            ws.onopen = () => pushLore(`Connected to ${wsUrl}`);
+            ws.onmessage = (e) => {
+              let m;
+              try { m = JSON.parse(e.data); } catch { return; }
+              if (m.type === "chat") ingestChat(m.user || randomUserName(rnd), m.text, false);
+              if (m.type === "admin" && typeof m.cmd === 'string') runAdminCommand(m.cmd);
+              if (m.type === "lore" && m.text) pushLore(m.text);
+            };
+            ws.onclose = () => pushLore(`Disconnected from ${wsUrl}`);
+            ws.onerror = () => pushLore(`WS error on ${wsUrl}`);
+            return () => ws.close();
+          } catch {
+            pushLore(`Failed to connect ${wsUrl}`);
+          }
+        }, [wsUrl, rnd]);
+
+        function wsSend(obj) {
+          if (wsRef.current && wsRef.current.readyState === 1) {
+            try { wsRef.current.send(JSON.stringify(obj)); } catch (e) {}
+          }
+        }
+
+        function pushLore(text) {
+          setLore((L) => [{ id: Math.random(), ts: Date.now(), text }, ...L].slice(0, 80));
+        }
+        function ingestChat(user, txt, echoWS = true) {
+          const msg = { id: Math.random(), user, text: txt, ts: Date.now() };
+          setMessages((M) => [...M.slice(-199), msg]);
+          if (echoWS) wsSend({ type: "chat", user, text: txt });
+          applyRules(txt);
+        }
+        function handleSend() {
+          const txt = input.trim(); if (!txt) return;
+          if (txt === "/admin") { setShowAdmin((s) => !s); setInput(""); return; }
+          ingestChat(randomUserName(rnd), txt, true);
+          setInput("");
+        }
+        function handleAdminSend() {
+          const txt = adminInput.trim(); if (!txt) return;
+          setAdminMessages((M) => [...M.slice(-199), { id: Math.random(), user: "ADMIN", text: txt, ts: Date.now() }]);
+          wsSend({ type: "admin", cmd: txt });
+          runAdminCommand(txt);
+          setAdminInput("");
+        }
+        function runAdminCommand(cmd) {
+          const parts = cmd.trim().split(/\s+/);
+          const head = (parts.shift() || '').toLowerCase();
+          if (!head) return;
+          if (head === 'set' && parts[0] === 'weight') {
+            const key = parts[1]; const val = parseFloat(parts[2]);
+            if (key in weights && !Number.isNaN(val)) {
+              setWeights((w) => ({ ...w, [key]: clamp(val, -1, 1) }));
+              pushLore(`Director set weight ${key} → ${val.toFixed(2)}`);
+            }
+            return;
+          }
+          if (head === 'add' && parts[0] === 'spawn') {
+            const word = (parts[1] || '').toLowerCase();
+            const tile = (parts[2] || 'wheat').toLowerCase();
+            if (word) {
+              setCustomVerbs((v) => [...v.filter(x => x.word !== word), { word, kind: 'spawn', payload: { tile } }]);
+              pushLore(`Director added spawn verb '${word}' → ${tile}`);
+            }
+            return;
+          }
+          if (head === 'add' && parts[0] === 'chance') {
+            const word = (parts[1] || '').toLowerCase();
+            const meter = (parts[2] || 'rain').toLowerCase();
+            const amount = parseFloat(parts[3] || '0.05');
+            if (word) {
+              setCustomVerbs((v) => [...v.filter(x => x.word !== word), { word, kind: 'chance', payload: { meter, amount } }]);
+              pushLore(`Director added chance verb '${word}' → ${meter}+${amount}`);
+            }
+            return;
+          }
+          if (head === 'remove') {
+            const word = (parts[0] || '').toLowerCase();
+            setCustomVerbs((v) => v.filter(x => x.word !== word));
+            pushLore(`Director removed verb '${word}'`);
+            return;
+          }
+          if (head === 'lore') {
+            const text = cmd.slice(cmd.indexOf(' ') + 1);
+            if (text) { pushLore(text); wsSend({ type: 'lore', text }); }
+            return;
+          }
+          if (head === 'reseed') { setSeed(Math.random().toString(36).slice(2)); return; }
+          applyRules(cmd);
+        }
+        function applyRules(txt) {
+          const key = sanitizeWord(txt);
+          if (key) {
+            if (!countsRef.current.has(key)) countsRef.current.set(key, []);
+            countsRef.current.get(key).push(Date.now());
+          }
+          const lower = txt.toLowerCase();
+          let w2 = world;
+          // basic verbs
+          if (lower === 'wheat') {
+            const ok = spawnWheat(w2, rnd, weights);
+            if (ok && rnd() < 0.25) pushLore(randomOne([
+              "Golden shoots push through damp soil.",
+              "Farmers in the north whisper: the fields stir again.",
+              "A faint rustle: kernels greet the wind.",
+            ], rnd));
+          }
+          if (lower === 'rain') {
+            w2.meta.rainMeter = clamp((w2.meta.rainMeter || 0) + 0.06 + weights.rainBias * 0.05, 0, 1);
+            if (w2.meta.rainMeter > 0.65 + (weights.chaos * (rnd() - 0.5))) {
+              doRain(w2, rnd, weights);
+              pushLore("Clouds gather. A soft percussion begins. Mundo drinks.");
+              w2.meta.rainMeter = 0;
+            }
+          }
+          if (lower === 'sun') w2.meta.rainMeter = clamp((w2.meta.rainMeter || 0) - 0.08, 0, 1);
+          if (lower === 'flood') {
+            if (rnd() < 0.35 + weights.floodIntensity * 0.4) {
+              doFlood(w2, rnd, weights);
+              pushLore("Rivers swell their banks. Lowlands watch with concern.");
+            }
+          }
+          // sequences
+          advanceSequence(lower, sequenceRef, (stage) => {
+            if (stage === 1) pushLore("A hush. Something old wakes.");
+            if (stage === 2) pushLore("Crows spiral. The air smells of iron.");
+          }, () => { summonWitchCircle(w2, rnd); pushLore("A witch circle blossoms in the bog. Songs in a tongue you almost recall."); });
+          // custom verbs
+          applyCustomVerbs(w2, lower);
+          // plurality drift
+          applyPlurality(w2, countsRef.current, weights, rnd);
+          setWorld({ ...w2 });
+        }
+        function applyCustomVerbs(w2, lower) {
+          for (const v of customVerbs) {
+            if (lower !== v.word) continue;
+            if (v.kind === 'spawn') {
+              if (v.payload?.tile === 'wheat') spawnWheat(w2, rnd, weights);
+              if (v.payload?.tile === 'sand') sandify(w2, rnd);
+              if (v.payload?.tile === 'water') doFlood(w2, rnd, { ...weights, floodIntensity: 0.2 });
+              pushLore(`Custom verb '${v.word}' shaped the land.`);
+            }
+            if (v.kind === 'chance') {
+              const meter = `${v.payload?.meter || 'rain'}Meter`;
+              w2.meta[meter] = clamp((w2.meta[meter] || 0) + (v.payload?.amount || 0.05), 0, 1);
+              if (meter === 'rainMeter' && w2.meta[meter] > 0.65) {
+                doRain(w2, rnd, weights);
+                w2.meta[meter] = 0;
+                pushLore(`Skies answer '${v.word}'.`);
+              }
+            }
+          }
+        }
+        // UI structure
+        return (
+          <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 px-4 py-4 md:grid-cols-3">
+            {/* World column */}
+            <div className="md:col-span-2">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="text-lg font-semibold">Mundo</div>
+                <div className="flex items-center gap-3 text-xs text-slate-400">
+                  <div>Seed: <code className="text-emerald-300">{seed.slice(0,6)}</code></div>
+                  <div className="flex items-center gap-1">
+                    <span>WS:</span>
+                    <input value={wsUrl} onChange={(e) => setWsUrl(e.target.value)} placeholder="wss://host" className="rounded bg-slate-900 px-2 py-0.5 text-xs ring-1 ring-slate-700 w-40" />
+                  </div>
+                </div>
+              </div>
+              <div className="overflow-hidden rounded-2xl border border-slate-800 shadow-inner shadow-black/20">
+                <canvas ref={canvasRef} width={W * SCALE} height={H * SCALE} className="block w-full bg-slate-900" />
+              </div>
+              <Legend />
+            </div>
+            {/* Right column */}
+            <div className="flex min-h-[560px] flex-col gap-3">
+              {/* Chat */}
+              <div className="rounded-2xl border border-slate-800">
+                <div className="flex items-center justify-between border-b border-slate-800 p-2">
+                  <div className="text-lg font-semibold">Chat</div>
+                  <div className="text-xs text-slate-400">Try: wheat, rain, sun, flood, sand, quicksand</div>
+                </div>
+                <div className="h-72 overflow-y-auto p-3 text-sm" id="chatScroll">
+                  {messages.map((m) => (
+                    <div key={m.id} className="mb-1">
+                      <span className="text-emerald-300">{m.user}</span>
+                      <span className="mx-2 text-slate-500">•</span>
+                      <span className="text-slate-200">{m.text}</span>
+                    </div>
+                  ))}
+                  {messages.length === 0 && (<div className="text-slate-500">No messages yet. Be the first to guide Mundo.</div>)}
+                </div>
+                <div className="flex items-center gap-2 border-t border-slate-800 p-2">
+                  <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") handleSend(); }} placeholder="Type a word… (/admin to open Director Console)" className="flex-1 rounded-xl bg-slate-900 px-3 py-2 text-sm outline-none ring-1 ring-slate-700 placeholder:text-slate-500 focus:ring-emerald-500" />
+                  <button onClick={handleSend} className="rounded-xl bg-emerald-500 px-3 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-400">Send</button>
+                </div>
+              </div>
+              {/* Lore feed */}
+              <div className="rounded-2xl border border-slate-800">
+                <div className="flex items-center justify-between border-b border-slate-800 p-2">
+                  <div className="text-sm font-semibold">Lore feed</div>
+                  <button onClick={() => setSeed(Math.random().toString(36).slice(2))} className="text-xs text-slate-400 underline decoration-dotted underline-offset-2">reseed world</button>
+                </div>
+                <div className="h-56 overflow-y-auto p-3 text-sm">
+                  {lore.map((l) => (
+                    <div key={l.id} className="mb-2">
+                      <div className="text-slate-300">{l.text}</div>
+                      <div className="text-[10px] text-slate-500">{new Date(l.ts).toLocaleTimeString()}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* Director Console + Admin Chat */}
+              {showAdmin && (
+                <div className="rounded-2xl border border-slate-800">
+                  <DirectorConsole weights={weights} setWeights={setWeights} onReseed={() => setSeed(Math.random().toString(36).slice(2))} />
+                  <div className="border-t border-slate-800 p-2 text-sm font-semibold">Admin Chat</div>
+                  <div className="h-32 overflow-y-auto p-3 text-sm">
+                    {adminMessages.map((m) => (
+                      <div key={m.id} className="mb-1"><span className="text-fuchsia-400">{m.user}</span> <span className="text-slate-500">•</span> {m.text}</div>
+                    ))}
+                    {adminMessages.length === 0 && <div className="text-slate-500">No admin messages yet. Use commands below.</div>}
+                  </div>
+                  <div className="flex items-center gap-2 border-t border-slate-800 p-2">
+                    <input value={adminInput} onChange={(e) => setAdminInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") handleAdminSend(); }} placeholder="Type admin command or verb (e.g., add spawn myseed wheat)…" className="flex-1 rounded-xl bg-slate-900 px-3 py-2 text-sm outline-none ring-1 ring-slate-700 placeholder:text-slate-500 focus:ring-fuchsia-400" />
+                    <button onClick={handleAdminSend} className="rounded-xl bg-fuchsia-500 px-3 py-2 text-sm font-semibold text-fuchsia-950 hover:bg-fuchsia-400">Run</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      // Director console component
+      function DirectorConsole({ weights, setWeights, onReseed }) {
+        return (
+          <div className="rounded-2xl border border-slate-800">
+            <div className="border-b border-slate-800 p-2 text-sm font-semibold flex items-center justify-between">
+              <span>Director Console</span>
+              <button onClick={onReseed} className="text-xs rounded bg-slate-800 px-2 py-1">Reseed</button>
+            </div>
+            <div className="space-y-3 p-3 text-sm">
+              <Slider label="Rain bias" min={-1} max={1} step={0.01} value={weights.rainBias} onChange={(v) => setWeights((w) => ({ ...w, rainBias: v }))} />
+              <Slider label="Flood intensity" min={0} max={1} step={0.01} value={weights.floodIntensity} onChange={(v) => setWeights((w) => ({ ...w, floodIntensity: v }))} />
+              <Slider label="Spawn boost" min={-1} max={1} step={0.01} value={weights.spawnBoost} onChange={(v) => setWeights((w) => ({ ...w, spawnBoost: v }))} />
+              <Slider label="Chaos" min={0} max={1} step={0.01} value={weights.chaos} onChange={(v) => setWeights((w) => ({ ...w, chaos: v }))} />
+              <Slider label="Quicksand sensitivity" min={0.1} max={0.8} step={0.01} value={weights.quicksandSensitivity} onChange={(v) => setWeights((w) => ({ ...w, quicksandSensitivity: v }))} />
+            </div>
+          </div>
+        );
+      }
+      function Slider({ label, value, onChange, min = 0, max = 1, step = 0.01 }) {
+        return (
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <div>{label}</div>
+              <div className="tabular-nums text-slate-300">{value.toFixed(2)}</div>
+            </div>
+            <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full accent-emerald-400" />
+          </div>
+        );
+      }
+      function Legend() {
+        return (
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-400 md:grid-cols-4">
+            <LegendItem colorClass="bg-green-500" label="Grass" />
+            <LegendItem colorClass="bg-blue-500" label="Water" />
+            <LegendItem colorClass="bg-yellow-400" label="Wheat" />
+            <LegendItem colorClass="bg-amber-600" label="Sand / Quicksand" />
+            <LegendItem colorClass="bg-fuchsia-400" label="Witch circle" />
+          </div>
+        );
+      }
+      function LegendItem({ colorClass, label }) {
+        return (
+          <div className="flex items-center gap-2">
+            <div className={`h-3 w-3 rounded ${colorClass}`} />
+            <div>{label}</div>
+          </div>
+        );
+      }
+
+      // World generation & tick
+      function makeInitialWorld(rnd) {
+        const grid = new Uint8Array(W * H);
+        const height = new Float32Array(W * H);
+        const moisture = new Float32Array(W * H);
+        const idx = (x, y) => y * W + x;
+        const blobs = (kind, count, steps, spread) => {
+          for (let b = 0; b < count; b++) {
+            let x = (rnd() * W) | 0, y = (rnd() * H) | 0;
+            for (let s = 0; s < steps; s++) {
+              const r = (rnd() * spread) | 0;
+              for (let i = 0; i < r; i++) {
+                const xx = clamp(x + ((rnd() < 0.5 ? -1 : 1) * (rnd() * 2) | 0), 0, W - 1);
+                const yy = clamp(y + ((rnd() < 0.5 ? -1 : 1) * (rnd() * 2) | 0), 0, H - 1);
+                grid[idx(xx, yy)] = kind;
+              }
+              x = clamp(x + (rnd() < 0.5 ? -1 : 1), 0, W - 1);
+              y = clamp(y + (rnd() < 0.5 ? -1 : 1), 0, H - 1);
+            }
+          }
+        };
+        grid.fill(GRASS);
+        blobs(WATER, 5, 400, 14);
+        blobs(SAND, 3, 220, 10);
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const id = idx(x, y);
+            height[id] = 0.5 + (rnd() - 0.5) * 0.15 + (grid[id] === WATER ? -0.15 : 0);
+            moisture[id] = 0.4 + (rnd() - 0.5) * 0.1 + (grid[id] === WATER ? 0.3 : 0);
+          }
+        }
+        return { grid, height, moisture, meta: { rainMeter: 0 } };
+      }
+      function tickWorld(world, rnd, weights, counts) {
+        const { grid, moisture } = world;
+        for (let i = 0; i < grid.length; i++) {
+          if (grid[i] === WATER) moisture[i] = clamp(moisture[i] + 0.002, 0, 1);
+          else moisture[i] = clamp(moisture[i] - 0.001, 0, 1);
+        }
+        for (let i = 0; i < grid.length; i++) {
+          if (grid[i] === WHEAT) {
+            if (moisture[i] < 0.25 && Math.random() < 0.005) grid[i] = GRASS;
+            if (moisture[i] > 0.6 && Math.random() < 0.01) spreadWheatAtIndex(world, i, rnd, weights);
+          }
+        }
+        for (let i = 0; i < grid.length; i++) {
+          if (grid[i] === GRASS && moisture[i] < 0.2 && Math.random() < 0.002) grid[i] = SAND;
+        }
+        return world;
+      }
+      function draw(canvas, world) {
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const { grid, height, moisture } = world;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const i = y * W + x;
+            const t = grid[i];
+            const h = height[i];
+            const m = moisture[i];
+            let r = 0, g = 0, b = 0;
+            if (t === GRASS) { r = 20; g = 120 + Math.floor(70 * h); b = 40; }
+            else if (t === WATER) { r = 25; g = 80 + Math.floor(70 * m); b = 180 + Math.floor(50 * h); }
+            else if (t === WHEAT) { r = 190 + Math.floor(40 * h); g = 160 + Math.floor(50 * m); b = 30; }
+            else if (t === SAND) { r = 180 + Math.floor(40 * h); g = 140 + Math.floor(40 * h); b = 60; }
+            else if (t === WITCH) { r = 210; g = 110; b = 230; }
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fillRect(x * SCALE, y * SCALE, SCALE, SCALE);
+          }
+        }
+        ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+        for (let x = 0; x <= W; x++) {
+          ctx.beginPath(); ctx.moveTo(x * SCALE + 0.5, 0); ctx.lineTo(x * SCALE + 0.5, H * SCALE); ctx.stroke();
+        }
+        for (let y = 0; y <= H; y++) {
+          ctx.beginPath(); ctx.moveTo(0, y * SCALE + 0.5); ctx.lineTo(W * SCALE, y * SCALE + 0.5); ctx.stroke();
+        }
+      }
+      function neighbors(x, y) {
+        const out = [];
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const xx = x + dx, yy = y + dy;
+            if (xx >= 0 && yy >= 0 && xx < W && yy < H) out.push({ x: xx, y: yy });
+          }
+        }
+        return out;
+      }
+      function spawnWheat(world, rnd, weights) {
+        const { grid, moisture } = world;
+        for (let tries = 0; tries < 60; tries++) {
+          const i = (rnd() * grid.length) | 0;
+          if (grid[i] === GRASS && moisture[i] > 0.25 && rnd() < 0.6 + weights.spawnBoost * 0.3) {
+            grid[i] = WHEAT; return true;
+          }
+        }
+        return false;
+      }
+      function spreadWheatAtIndex(world, i, rnd, weights) {
+        const { grid } = world; const x = i % W, y = (i / W) | 0; const nbs = neighbors(x, y);
+        const nb = nbs[(rnd() * nbs.length) | 0]; const j = nb.y * W + nb.x;
+        if (grid[j] === GRASS && rnd() < 0.8 + weights.spawnBoost * 0.2) grid[j] = WHEAT;
+      }
+      function doRain(world, rnd, weights) {
+        const { moisture, grid } = world;
+        for (let i = 0; i < grid.length; i++) {
+          moisture[i] = clamp(moisture[i] + 0.15 + weights.chaos * (Math.random() - 0.5) * 0.1, 0, 1);
+          if (grid[i] === GRASS && moisture[i] > 0.65 && Math.random() < 0.02) grid[i] = WHEAT;
+        }
+      }
+      function doFlood(world, rnd, weights) {
+        const { grid, moisture } = world;
+        const floodChance = 0.01 + weights.floodIntensity * 0.04;
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const i = y * W + x;
+            if (grid[i] === WATER) {
+              const nbs = neighbors(x, y);
+              for (const nb of nbs) {
+                const j = nb.y * W + nb.x;
+                if (grid[j] !== WATER && Math.random() < floodChance) grid[j] = WATER;
+              }
+            }
+            if (grid[i] !== WATER) moisture[i] = clamp(moisture[i] + 0.05, 0, 1);
+          }
+        }
+      }
+      function summonWitchCircle(world, rnd) {
+        const { grid, moisture } = world; let cx = 0, cy = 0; let best = -1;
+        for (let tries = 0; tries < 300; tries++) {
+          const x = (rnd() * W) | 0, y = (rnd() * H) | 0; const m = moisture[y * W + x];
+          if (m > best) { best = m; cx = x; cy = y; }
+        }
+        const radius = 6 + ((rnd() * 6) | 0);
+        for (let y = Math.max(0, cy - radius - 1); y < Math.min(H, cy + radius + 1); y++) {
+          for (let x = Math.max(0, cx - radius - 1); x < Math.min(W, cx + radius + 1); x++) {
+            const dx = x - cx, dy = y - cy; const d = Math.sqrt(dx * dx + dy * dy);
+            if (Math.abs(d - radius) < 1.2) grid[y * W + x] = WITCH;
+          }
+        }
+      }
+      function advanceSequence(word, sequenceRef, onStage, onComplete) {
+        const seq = ["eye-of-newt", "toe-of-frog", "wing-of-bat"];
+        const now = Date.now(); const timeout = 45000;
+        const st = sequenceRef.current;
+        if (now - st.lastTs > timeout) st.stage = 0;
+        if (word === seq[st.stage]) {
+          st.stage += 1; st.lastTs = now; onStage(st.stage);
+          if (st.stage >= seq.length) { onComplete(); st.stage = 0; }
+        }
+      }
+      function applyPlurality(world, counts, weights, rnd) {
+        let total = 0; let maxWord = ""; let maxCount = 0;
+        for (const [w, arr] of counts.entries()) {
+          total += arr.length;
+          if (arr.length > maxCount) { maxCount = arr.length; maxWord = w; }
+        }
+        if (total === 0) return;
+        const share = maxCount / total;
+        if ((maxWord === "sand" || maxWord === "quicksand") && share > weights.quicksandSensitivity) sandify(world, rnd);
+      }
+      function sandify(world, rnd) {
+        const { grid, moisture } = world;
+        for (let i = 0; i < grid.length; i++) {
+          if (grid[i] === GRASS && moisture[i] < 0.5 && Math.random() < 0.006) grid[i] = SAND;
+          if (grid[i] === WHEAT && Math.random() < 0.004) grid[i] = SAND;
+        }
+      }
+
+      // Render the Mundo app on page load
+      ReactDOM.createRoot(document.getElementById('root')).render(<MundoMVP />);
+    </script>
+  </body>
+</html>
